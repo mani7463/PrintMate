@@ -16,7 +16,7 @@ window.PRINTMATE_CONFIG = {
   BACKEND_URL: savedBackend || (
     (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
       ? 'http://localhost:3000'
-      : 'https://printmate-backend.onrender.com'
+      : 'https://printmate-wccb.onrender.com'
   )
 };
 
