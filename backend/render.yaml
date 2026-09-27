@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: printmate-backend
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /api/hardware/status
+    envVars:
+      - key: PORT
+        value: 3000
+      - key: NODE_ENV
+        value: production
+      - key: FRONTEND_URL
+        value: https://your-printmate.vercel.app

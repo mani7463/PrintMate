@@ -1,0 +1,12 @@
+{
+  "name": "printmate-local-agent",
+  "version": "1.0.0",
+  "description": "Local Print Agent running on the laptop connected to the physical USB/Wi-Fi printer",
+  "main": "agent.js",
+  "scripts": {
+    "start": "node agent.js"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.8.1"
+  }
+}

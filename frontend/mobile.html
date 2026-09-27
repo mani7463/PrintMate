@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>PrintMate Mobile - Upload, Pay & Print</title>
+  <meta name="description" content="Instant zero-install print portal. Upload documents with client-side page counting, configure print options, and pay via UPI or Card to trigger self-service kiosk hardware.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/mobile.css">
+  <!-- Lightweight PDF.js for client-side PDF page counting & preview -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+</head>
+<body>
+
+  <!-- Mobile Header -->
+  <header class="mobile-header">
+    <div class="brand-row">
+      <div class="brand-icon">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+        </svg>
+      </div>
+      <div>
+        <h1 class="brand-title">PrintMate</h1>
+        <p class="brand-sub">Self-Service PVM Portal</p>
+      </div>
+    </div>
+    <div class="session-badge" id="session-tag">SESSION: ......</div>
+  </header>
+
+  <!-- Live Connection Banner -->
+  <div class="connection-banner" id="connection-banner">
+    <div class="dot-pulse"></div>
+    <span id="banner-text">Synchronized with Kiosk Hardware. Ready for upload.</span>
+  </div>
+
+  <!-- Main Container -->
+  <main class="mobile-content">
+
+    <!-- Upload & Settings Form View -->
+    <div id="form-view">
+      
+      <!-- Step 1: Document Upload & Client-Side Preview -->
+      <section class="card-section">
+        <h2 class="section-title">
+          <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+          </svg>
+          1. Upload Document
+        </h2>
+
+        <!-- Interactive Dropzone -->
+        <div class="dropzone" id="dropzone">
+          <div class="drop-icon">
+            <svg width="32" height="32" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+            </svg>
+          </div>
+          <div class="drop-title">Tap to browse files or take photo</div>
+          <div class="drop-sub">PDF, Docx, JPG, PNG (Auto Page Counting & Preview)</div>
+          
+          <div class="sample-btn-container">
+            <button type="button" class="btn-sample-doc" id="btn-use-sample">
+              📄 Quick Demo Document (2 Pages)
+            </button>
+          </div>
+          <input type="file" id="file-input" style="display: none;" accept=".pdf,.doc,.docx,.txt,.png,.jpg,.jpeg,.webp">
+        </div>
+
+        <!-- Document Preview & Inspection Card -->
+        <div class="file-preview-card" id="file-card" style="display: none;">
+          <div class="preview-thumbnail-box" id="preview-thumbnail-box">
+            <!-- Canvas or thumbnail will render here -->
+            <canvas id="preview-canvas" width="70" height="90" style="display:none;"></canvas>
+            <div id="preview-fallback-icon">
+              <svg width="28" height="28" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+            </div>
+          </div>
+          <div class="file-meta">
+            <div class="file-meta-name" id="file-name">document.pdf</div>
+            <div class="file-meta-pills">
+              <span class="file-badge" id="file-size">0 KB</span>
+              <span class="file-badge highlight" id="file-pages-badge">1 Page Detected</span>
+            </div>
+          </div>
+          <button class="btn-remove-file" id="btn-remove-file" title="Change file">
+            <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      </section>
+
+      <!-- Step 2: Print Configuration Controls -->
+      <section class="card-section">
+        <h2 class="section-title">
+          <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+          </svg>
+          2. Print Configuration
+        </h2>
+
+        <div class="settings-grid">
+          
+          <!-- Color Mode: B&W ₹2/pg vs Color ₹10/pg -->
+          <div class="setting-row">
+            <div class="setting-title-box">
+              <span class="setting-label">Color Mode</span>
+              <span class="setting-hint">B&W: ₹2/pg • Color: ₹10/pg</span>
+            </div>
+            <div class="segment-group">
+              <button type="button" class="segment-btn active" data-color="bw" id="btn-color-bw">
+                B&W (₹2)
+              </button>
+              <button type="button" class="segment-btn" data-color="color" id="btn-color-full">
+                Color (₹10)
+              </button>
+            </div>
+          </div>
+
+          <!-- Paper Size: A4 vs A3 -->
+          <div class="setting-row">
+            <div class="setting-title-box">
+              <span class="setting-label">Paper Size</span>
+              <span class="setting-hint">Tray 1 (A4) / Tray 2 (A3)</span>
+            </div>
+            <div class="segment-group">
+              <button type="button" class="segment-btn active" data-paper="A4">A4 Standard</button>
+              <button type="button" class="segment-btn" data-paper="A3">A3 Ledger</button>
+            </div>
+          </div>
+
+          <!-- Duplex Options: Single vs Double-sided -->
+          <div class="setting-row">
+            <div class="setting-title-box">
+              <span class="setting-label">Duplex (Sides)</span>
+              <span class="setting-hint">2-Sided saves paper sheets</span>
+            </div>
+            <div class="segment-group">
+              <button type="button" class="segment-btn active" data-duplex="single">1-Sided</button>
+              <button type="button" class="segment-btn" data-duplex="double">2-Sided</button>
+            </div>
+          </div>
+
+          <!-- Copies Stepper -->
+          <div class="setting-row">
+            <div class="setting-title-box">
+              <span class="setting-label">Number of Copies</span>
+              <span class="setting-hint">Total sets to print</span>
+            </div>
+            <div class="stepper-control">
+              <button type="button" class="stepper-btn" id="btn-copies-minus">−</button>
+              <div class="stepper-val mono" id="copies-val">1</div>
+              <button type="button" class="stepper-btn" id="btn-copies-plus">+</button>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- Step 3: Real-Time Dynamic Cost Estimator -->
+      <section class="card-section cost-estimator-card">
+        <div class="cost-header">
+          <span class="cost-title">Cost Estimation Summary</span>
+          <span class="cost-total mono" id="cost-total-display">₹2.00</span>
+        </div>
+        <div class="cost-breakdown">
+          <div class="cost-line">
+            <span id="cost-pages-detail">1 Page × 1 Copy</span>
+            <span class="mono" id="cost-subtotal-val">₹2.00</span>
+          </div>
+          <div class="cost-line">
+            <span>Rate (<span id="cost-rate-detail">B&W A4 @ ₹2/pg</span>)</span>
+            <span class="text-muted">Calculated</span>
+          </div>
+          <div class="cost-line total-highlight">
+            <strong>Total Amount to Pay</strong>
+            <strong class="text-emerald mono" id="cost-final-amount">₹2.00</strong>
+          </div>
+        </div>
+      </section>
+
+      <!-- Step 4: Pay & Dispatch Button -->
+      <button class="btn-print-main" id="btn-open-payment" disabled>
+        <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" />
+        </svg>
+        <span id="btn-pay-text">Pay & Print (₹2.00)</span>
+      </button>
+
+    </div>
+
+    <!-- Live Printing Tracker View -->
+    <div class="card-section tracker-view" id="tracker-view" style="display: none;">
+      
+      <!-- Payment Confirmation Chip -->
+      <div class="payment-confirmed-chip">
+        <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <span>Payment Received (<strong id="payment-txn-id">TXN-UPI</strong>)</span>
+      </div>
+
+      <div class="tracker-icon-box" id="tracker-icon-box">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+        </svg>
+      </div>
+
+      <h2 class="tracker-title" id="tracker-title">Printing Hardware Active</h2>
+      <p class="tracker-desc" id="tracker-desc">
+        Watch the Kiosk display. Your document has been spooled to the printer hardware.
+      </p>
+
+      <div class="progress-track">
+        <div class="progress-fill" id="tracker-progress-fill"></div>
+      </div>
+
+      <div class="tracker-status">
+        <span id="tracker-status-text">Spooling to CUPS buffer...</span>
+        <span id="tracker-percent">0%</span>
+      </div>
+
+      <!-- Pickup Instructions Notification -->
+      <div class="mobile-pickup-box" id="mobile-pickup-box" style="display: none;">
+        <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+        </svg>
+        <div>
+          <strong>Ready for Pickup!</strong>
+          <p>Please collect your printed pages from <strong>Tray B (Output Slot)</strong> at the kiosk.</p>
+        </div>
+      </div>
+
+      <button class="btn-print-main" id="btn-print-another" style="display: none; margin-top: 1.5rem; background: rgba(30, 41, 59, 0.9);">
+        Print Another Document
+      </button>
+    </div>
+
+  </main>
+
+  <!-- Interactive Payment Gateway Modal (UPI / Cards / Mock Gateway) -->
+  <div class="payment-modal-overlay" id="payment-modal">
+    <div class="payment-modal-sheet">
+      <div class="sheet-handle"></div>
+      
+      <div class="payment-modal-header">
+        <div class="pay-brand">
+          <span class="pay-brand-icon">💳</span>
+          <div>
+            <h3>PrintMate Pay Gateway</h3>
+            <p>Self-Service Vending Checkout</p>
+          </div>
+        </div>
+        <button class="btn-icon-close" id="btn-close-pay-modal">✕</button>
+      </div>
+
+      <!-- Total Amount Banner -->
+      <div class="pay-amount-banner">
+        <span class="pay-amount-label">Payable Amount</span>
+        <span class="pay-amount-val mono" id="pay-modal-amount">₹2.00</span>
+      </div>
+
+      <!-- Payment Tabs -->
+      <div class="payment-tabs">
+        <button class="pay-tab active" data-tab="upi" id="tab-btn-upi">
+          <span>⚡ Instant UPI</span>
+        </button>
+        <button class="pay-tab" data-tab="card" id="tab-btn-card">
+          <span>💳 Debit/Credit</span>
+        </button>
+        <button class="pay-tab" data-tab="mock" id="tab-btn-mock">
+          <span>🧪 1-Tap Mock</span>
+        </button>
+      </div>
+
+      <!-- Tab Content 1: UPI -->
+      <div class="pay-tab-content active" id="tab-content-upi">
+        <div class="upi-box">
+          <p class="upi-hint">Scan with Google Pay, PhonePe, Paytm or BHIM</p>
+          <div class="upi-qr-frame">
+            <!-- Dynamic UPI QR -->
+            <img id="upi-qr-image" src="" alt="UPI Payment QR" width="160" height="160">
+          </div>
+          <div class="upi-id-badge">
+            <span>UPI ID: <strong>printmate@kiosk</strong></span>
+          </div>
+
+          <button class="btn-simulate-pay" id="btn-pay-upi">
+            ⚡ Simulate UPI Approval (₹<span class="pay-btn-amt">2.00</span>)
+          </button>
+        </div>
+      </div>
+
+      <!-- Tab Content 2: Cards -->
+      <div class="pay-tab-content" id="tab-content-card">
+        <div class="card-form">
+          <div class="form-group">
+            <label>Card Number</label>
+            <input type="text" id="card-num" placeholder="4532 •••• •••• 8921" value="4532 8920 1192 8492" maxlength="19">
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Expiry (MM/YY)</label>
+              <input type="text" id="card-exp" placeholder="08/29" value="08/29" maxlength="5">
+            </div>
+            <div class="form-group">
+              <label>CVV</label>
+              <input type="password" id="card-cvv" placeholder="•••" value="842" maxlength="3">
+            </div>
+          </div>
+
+          <button class="btn-simulate-pay" id="btn-pay-card">
+            💳 Pay ₹<span class="pay-btn-amt">2.00</span> via Card
+          </button>
+        </div>
+      </div>
+
+      <!-- Tab Content 3: 1-Tap Mock -->
+      <div class="pay-tab-content" id="tab-content-mock">
+        <div class="mock-pay-box">
+          <p>Instant zero-friction test authorization for rapid testing & demos.</p>
+          <button class="btn-simulate-pay" id="btn-pay-mock" style="background: linear-gradient(135deg, #10b981, #06b6d4);">
+            🚀 Authorize & Dispatch Print (₹<span class="pay-btn-amt">2.00</span>)
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Socket.IO CDN & Mobile Controller Logic -->
+  <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+  <script src="/js/config.js"></script>
+  <script src="/js/mobile.js"></script>
+</body>
+</html>

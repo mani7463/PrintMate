@@ -1,0 +1,30 @@
+{
+  "name": "printmate",
+  "version": "1.0.0",
+  "description": "PrintMate Print Vending Machine (PVM) System",
+  "scripts": {
+    "start": "node backend/server.js",
+    "backend": "node backend/server.js",
+    "agent": "node local-agent/agent.js",
+    "test": "node backend/test-e2e.js"
+  },
+  "keywords": [
+    "print-vending-machine",
+    "kiosk",
+    "self-service",
+    "render",
+    "vercel"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "multer": "^2.4.0",
+    "qrcode": "^1.5.4",
+    "socket.io": "^4.8.4",
+    "socket.io-client": "^4.8.4",
+    "uuid": "^14.0.2"
+  }
+}

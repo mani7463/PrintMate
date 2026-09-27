@@ -1,0 +1,9 @@
+{
+  "version": 2,
+  "rewrites": [
+    { "source": "/", "destination": "/index.html" },
+    { "source": "/kiosk", "destination": "/kiosk.html" },
+    { "source": "/kiosk/:id", "destination": "/mobile.html" },
+    { "source": "/session/:id", "destination": "/mobile.html" }
+  ]
+}
