@@ -14,8 +14,9 @@ async function runComprehensiveVerification() {
   const hwRes = await fetch(`${SERVER_URL}/api/hardware/status`);
   const hwData = await hwRes.json();
   if (!hwData.success) throw new Error('Hardware API failed');
-  console.log(`   📄 Paper Tray 1 (A4): ${hwData.hardware.paperTrays.tray1.currentSheets}/${hwData.hardware.paperTrays.tray1.maxSheets} sheets`);
-  console.log(`   🎨 CMYK Toner Levels: Black: ${hwData.hardware.toner.black.percent}%, Cyan: ${hwData.hardware.toner.cyan.percent}%`);
+  console.log(`   🔌 Physical Printer Connected: ${hwData.hardware.physicalPrinterConnected ? 'YES' : 'NO (Accurate Disconnected State)'}`);
+  console.log(`   📄 Paper Tray 1 Status: ${hwData.hardware.paperTrays.tray1.status} (${hwData.hardware.paperTrays.tray1.currentSheets} sheets)`);
+  console.log(`   🎨 Cartridge Telemetry: ${hwData.hardware.hasPhysicalSupplies ? 'ONLINE' : 'OFFLINE (No False Levels)'}`);
 
   const diagRes = await fetch(`${SERVER_URL}/api/printers/diagnostics`);
   const diagData = await diagRes.json();
@@ -23,7 +24,7 @@ async function runComprehensiveVerification() {
   console.log(`   🖨️  Detected Device Drivers: ${diagData.drivers.length} profile(s) found`);
   if (diagData.drivers.length > 0) {
     const drv = diagData.drivers[0];
-    console.log(`      • Active: ${drv.name} (Driver: ${drv.driverName}, Port: ${drv.portName}, Duplex: ${drv.duplex}, Color: ${drv.color})`);
+    console.log(`      • Active: ${drv.name} (Driver: ${drv.driverName}, Port: ${drv.portName}, Category: ${drv.category})`);
   }
   console.log(`   ✅ Hardware Health & Printer Drivers: VERIFIED PASS`);
 

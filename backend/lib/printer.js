@@ -10,45 +10,14 @@ let jobHistory = [];
  */
 function getDetailedPrinterDriverSettings() {
   return new Promise((resolve) => {
+    // If not running directly on Windows host (e.g. running on Linux / Render cloud container),
+    // retrieve drivers reported by the Windows local-agent if connected
     if (process.platform !== 'win32') {
-      const simulatedDrivers = [
-        {
-          name: 'PrintMate High-Speed Laser (Simulation)',
-          driverName: 'PrintMate Enterprise Universal Driver',
-          driverVersion: 'v4.18.2',
-          manufacturer: 'PrintMate Hardware Systems',
-          portName: 'USB001 (High-Speed Direct Link)',
-          status: 'Ready',
-          jobCount: 0,
-          shared: false,
-          color: true,
-          duplex: 'TwoSidedLongEdge',
-          collate: true,
-          paperSize: 'A4',
-          isDefault: true,
-          resolution: '1200 x 1200 DPI',
-          printProcessor: 'winprint (RAW)'
-        },
-        {
-          name: 'HP LaserJet Pro M404dn (Office Network)',
-          driverName: 'HP LaserJet Pro M404 PCL 6',
-          driverVersion: 'v3.2',
-          manufacturer: 'HP Inc.',
-          portName: '192.168.1.150:9100 (WLAN IP)',
-          status: 'Ready',
-          jobCount: 0,
-          shared: true,
-          color: false,
-          duplex: 'TwoSidedLongEdge',
-          collate: true,
-          paperSize: 'A4',
-          isDefault: false,
-          resolution: '1200 DPI',
-          printProcessor: 'winprint'
-        }
-      ];
-      setDriverSettings(simulatedDrivers);
-      return resolve(simulatedDrivers);
+      const hw = require('./hardware').getHardwareStatus();
+      if (hw.driverSettings && hw.driverSettings.length > 0) {
+        return resolve(hw.driverSettings);
+      }
+      return resolve([]);
     }
 
     const psScript = `
@@ -62,7 +31,7 @@ $printers = Get-Printer | ForEach-Object {
     Name = $p.Name
     DriverName = $p.DriverName
     DriverVersion = if ($drv -and $drv.MajorVersion) { "v" + $drv.MajorVersion + ".0" } else { "v4" }
-    Manufacturer = if ($drv -and $drv.Manufacturer) { $drv.Manufacturer } else { "Generic / Microsoft" }
+    Manufacturer = if ($drv -and $drv.Manufacturer) { $drv.Manufacturer } else { "Generic / OEM" }
     PortName = $p.PortName
     Status = if ($p.PrinterStatus -eq 0) { "Ready" } else { "Status " + $p.PrinterStatus }
     JobCount = $p.JobCount
@@ -80,50 +49,67 @@ $printers | ConvertTo-Json -Compress
     const b64 = Buffer.from(psScript, 'utf16le').toString('base64');
     exec(`powershell -NoProfile -EncodedCommand ${b64}`, { timeout: 10000 }, (error, stdout, stderr) => {
       if (error || !stdout.trim()) {
-        console.warn('Could not query Windows printer drivers directly, returning default driver list.');
-        const fallback = [
-          {
-            name: 'PrintMate High-Speed Laser (Simulation)',
-            driverName: 'PrintMate Enterprise Universal Driver',
-            driverVersion: 'v4.18.2',
-            manufacturer: 'PrintMate Hardware Systems',
-            portName: 'USB001 (Direct Host to Laptop)',
-            status: 'Ready',
-            jobCount: 0,
-            shared: false,
-            color: true,
-            duplex: 'TwoSidedLongEdge',
-            collate: true,
-            paperSize: 'A4',
-            isDefault: true,
-            resolution: '1200 x 1200 DPI',
-            printProcessor: 'winprint (RAW)'
-          }
-        ];
-        setDriverSettings(fallback);
-        return resolve(fallback);
+        console.warn('No local Windows printers returned from driver query.');
+        setDriverSettings([]);
+        return resolve([]);
       }
 
       try {
         let raw = JSON.parse(stdout.trim());
         if (!Array.isArray(raw)) raw = [raw];
 
-        const drivers = raw.map((p, idx) => ({
-          name: p.Name,
-          driverName: p.DriverName || 'Generic Printer Driver',
-          driverVersion: p.DriverVersion || 'v4',
-          manufacturer: p.Manufacturer || 'OEM Driver',
-          portName: p.PortName || 'USB001',
-          status: p.Status || 'Ready',
-          jobCount: p.JobCount || 0,
-          shared: Boolean(p.Shared),
-          color: p.Color !== false,
-          duplex: p.Duplex === '1' || p.Duplex === 'TwoSidedLongEdge' ? 'Two-Sided (Duplex)' : (p.Duplex === '0' || p.Duplex === 'OneSided' ? '1-Sided (Simplex)' : p.Duplex),
-          collate: p.Collate !== false,
-          paperSize: p.PaperSize === '1' ? 'Letter' : (p.PaperSize === '9' ? 'A4' : (p.PaperSize || 'A4')),
-          isDefault: idx === 0,
-          printProcessor: p.PrintProcessor || 'winprint'
-        }));
+        const drivers = raw.map((p) => {
+          const portUpper = (p.PortName || '').toUpperCase();
+          const nameUpper = (p.Name || '').toUpperCase();
+
+          const isVirtual = 
+            portUpper.includes('PORTPROMPT') || 
+            portUpper.includes('NUL:') || 
+            portUpper.includes('AD_PORT') || 
+            portUpper.includes('FILE:') || 
+            portUpper.includes('SHRFAX') || 
+            portUpper.includes('XPS') ||
+            nameUpper.includes('PDF') || 
+            nameUpper.includes('ONENOTE') || 
+            nameUpper.includes('ANYDESK') || 
+            nameUpper.includes('FAX') || 
+            nameUpper.includes('XPS');
+
+          const isPhysical = !isVirtual && (
+            portUpper.startsWith('USB') || 
+            portUpper.startsWith('DOT4') || 
+            portUpper.startsWith('WSD') || 
+            portUpper.startsWith('LPT') || 
+            portUpper.startsWith('COM') || 
+            portUpper.startsWith('BTH') ||
+            /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(portUpper) ||
+            portUpper.includes('IP_') ||
+            portUpper.includes('TCP') ||
+            portUpper.includes('NETWORK')
+          );
+
+          return {
+            name: p.Name,
+            driverName: p.DriverName || (isPhysical ? 'OEM Printer Driver' : 'Software Virtual Driver'),
+            driverVersion: p.DriverVersion || 'v4',
+            manufacturer: p.Manufacturer || (isPhysical ? 'OEM Hardware' : 'Microsoft / Virtual Software'),
+            portName: p.PortName || (isPhysical ? 'USB Port' : 'Software Queue'),
+            status: isPhysical ? (p.Status || 'Ready') : 'Virtual / Software Queue',
+            jobCount: p.JobCount || 0,
+            shared: Boolean(p.Shared),
+            color: p.Color !== false,
+            duplex: p.Duplex === '1' || p.Duplex === 'TwoSidedLongEdge' ? 'Two-Sided (Duplex)' : (p.Duplex === '0' || p.Duplex === 'OneSided' ? '1-Sided (Simplex)' : p.Duplex),
+            collate: p.Collate !== false,
+            paperSize: p.PaperSize === '1' ? 'Letter' : (p.PaperSize === '9' ? 'A4' : (p.PaperSize || 'A4')),
+            isDefault: isPhysical,
+            isPhysical: isPhysical,
+            category: isPhysical ? 'Physical Hardware Printer' : 'Virtual / Software Output',
+            printProcessor: p.PrintProcessor || 'winprint'
+          };
+        });
+
+        // Sort so physical printers are presented first
+        drivers.sort((a, b) => (b.isPhysical ? 1 : 0) - (a.isPhysical ? 1 : 0));
 
         setDriverSettings(drivers);
         resolve(drivers);
@@ -145,17 +131,15 @@ function getInstalledPrinters() {
         return resolve(detailed.map(d => ({
           name: d.name,
           isDefault: d.isDefault,
+          isPhysical: d.isPhysical,
+          category: d.category,
           status: d.status,
           port: d.portName,
           driverName: d.driverName,
           color: d.color
         })));
       }
-
-      resolve([
-        { name: 'PrintMate High-Speed Laser (Simulation)', isDefault: true, status: 'Ready (Fast)' },
-        { name: 'Microsoft Print to PDF', isDefault: false, status: 'Ready' }
-      ]);
+      resolve([]);
     });
   });
 }

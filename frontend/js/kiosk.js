@@ -413,6 +413,15 @@ function bindDiagnostics() {
     modal.classList.add('open');
   });
 
+  const hwIndicator = document.getElementById('kiosk-hw-indicator');
+  if (hwIndicator) {
+    hwIndicator.addEventListener('click', () => {
+      fetchHardwareStatus();
+      fetchDriverDiagnostics();
+      modal.classList.add('open');
+    });
+  }
+
   closeBtn.addEventListener('click', () => {
     modal.classList.remove('open');
   });
@@ -491,35 +500,123 @@ async function fetchDriverDiagnostics() {
 
 function populateDriverSelect(drivers, selectedName = null) {
   const select = document.getElementById('diag-driver-select');
-  if (!select || !Array.isArray(drivers) || drivers.length === 0) return;
+  if (!select) return;
 
   select.innerHTML = '';
-  drivers.forEach((drv, i) => {
-    const opt = document.createElement('option');
-    opt.value = drv.name;
-    opt.textContent = `${drv.name} [${drv.status || 'Ready'}]`;
-    if (selectedName ? drv.name === selectedName : (drv.isDefault || i === 0)) {
-      opt.selected = true;
-    }
-    select.appendChild(opt);
-  });
+  if (!Array.isArray(drivers) || drivers.length === 0) {
+    const noOpt = document.createElement('option');
+    noOpt.value = '__none__';
+    noOpt.textContent = '⚠️ No Printers Detected (Connect USB/Wi-Fi)';
+    noOpt.selected = true;
+    select.appendChild(noOpt);
+    displayDriverSpecifications(null);
+    return;
+  }
 
-  const active = drivers.find(d => d.name === select.value) || drivers[0];
-  if (active) displayDriverSpecifications(active);
+  const physicalPrinters = drivers.filter(d => d.isPhysical);
+  const virtualPrinters = drivers.filter(d => !d.isPhysical);
+
+  if (physicalPrinters.length > 0) {
+    const physGroup = document.createElement('optgroup');
+    physGroup.label = 'Physical Hardware Printers (Active)';
+    physicalPrinters.forEach((drv) => {
+      const opt = document.createElement('option');
+      opt.value = drv.name;
+      opt.textContent = `🖨️ ${drv.name} [${drv.status || 'Ready'}]`;
+      if (selectedName ? drv.name === selectedName : drv.isDefault) {
+        opt.selected = true;
+      }
+      physGroup.appendChild(opt);
+    });
+    select.appendChild(physGroup);
+  } else {
+    const noOpt = document.createElement('option');
+    noOpt.value = '__none__';
+    noOpt.textContent = '⚠️ No Physical Printer Connected (Connect USB/Wi-Fi)';
+    if (!selectedName || !virtualPrinters.some(v => v.name === selectedName)) {
+      noOpt.selected = true;
+    }
+    select.appendChild(noOpt);
+  }
+
+  if (virtualPrinters.length > 0) {
+    const virtGroup = document.createElement('optgroup');
+    virtGroup.label = 'Software / Virtual Queues (Document Output)';
+    virtualPrinters.forEach((drv) => {
+      const opt = document.createElement('option');
+      opt.value = drv.name;
+      opt.textContent = `📄 ${drv.name} [Virtual Queue]`;
+      if (selectedName && drv.name === selectedName) {
+        opt.selected = true;
+      }
+      virtGroup.appendChild(opt);
+    });
+    select.appendChild(virtGroup);
+  }
+
+  // Handle user changing active device
+  select.onchange = async () => {
+    if (select.value === '__none__') {
+      displayDriverSpecifications(null);
+      return;
+    }
+    const chosen = drivers.find(d => d.name === select.value);
+    if (chosen) {
+      displayDriverSpecifications(chosen);
+      try {
+        await fetch(`${API_BASE}/api/hardware/select-printer`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ printerName: chosen.name })
+        });
+      } catch (_) {}
+    }
+  };
+
+  const active = drivers.find(d => d.name === select.value) || (physicalPrinters[0] || (select.value === '__none__' ? null : virtualPrinters[0]));
+  displayDriverSpecifications(active);
 }
 
 function displayDriverSpecifications(drv) {
-  if (!drv) return;
   const setEl = (id, val) => {
     const el = document.getElementById(id);
     if (el) el.textContent = val || '-';
   };
 
+  const statusEl = document.getElementById('spec-driver-status');
+
+  if (!drv || drv.name === '__none__') {
+    setEl('spec-driver-name', 'None Detected');
+    setEl('spec-driver-ver', 'N/A');
+    setEl('spec-driver-mfr', 'No Hardware Connected');
+    setEl('spec-driver-port', 'Disconnected');
+    if (statusEl) {
+      statusEl.textContent = 'Disconnected / Offline';
+      statusEl.className = 'badge-offline';
+    }
+    setEl('spec-driver-color', 'N/A');
+    setEl('spec-driver-duplex', 'N/A');
+    setEl('spec-driver-paper', 'N/A');
+    setEl('spec-driver-spool', 'Idle (0 active jobs)');
+    setEl('spec-driver-collate', 'N/A');
+    return;
+  }
+
   setEl('spec-driver-name', drv.driverName || drv.name);
   setEl('spec-driver-ver', drv.driverVersion || 'v4');
-  setEl('spec-driver-mfr', drv.manufacturer || 'OEM Hardware');
-  setEl('spec-driver-port', drv.portName || drv.port || 'USB Direct');
-  setEl('spec-driver-status', drv.status || 'Ready');
+  setEl('spec-driver-mfr', drv.manufacturer || (drv.isPhysical ? 'OEM Hardware' : 'Microsoft / Virtual Software'));
+  setEl('spec-driver-port', drv.portName || drv.port || (drv.isPhysical ? 'USB Port' : 'Software Queue'));
+
+  if (statusEl) {
+    if (drv.isPhysical) {
+      statusEl.textContent = drv.status || 'Ready';
+      statusEl.className = 'badge-success';
+    } else {
+      statusEl.textContent = 'Virtual / Software Destination';
+      statusEl.className = 'badge-virtual';
+    }
+  }
+
   setEl('spec-driver-color', drv.color ? 'Full Color (CMYK/RGB)' : 'Monochrome (B&W Only)');
   setEl('spec-driver-duplex', drv.duplex || '1-Sided / 2-Sided');
   setEl('spec-driver-paper', drv.paperSize || 'A4 Standard (210×297mm)');
@@ -542,55 +639,114 @@ async function fetchHardwareStatus() {
 function updateDiagnosticsUI(hw) {
   if (!hw) return;
 
+  // Header status indicator dot & label
+  const hwDot = document.getElementById('hw-indicator-dot');
+  const hwText = document.getElementById('hw-indicator-text');
+  if (hwDot && hwText) {
+    if (hw.physicalPrinterConnected) {
+      hwDot.className = 'hw-dot online';
+      hwText.textContent = `Printer Ready (${hw.selectedPrinter || 'USB'})`;
+    } else if (hw.driverSettings && hw.driverSettings.some(d => !d.isPhysical)) {
+      hwDot.className = 'hw-dot virtual';
+      hwText.textContent = 'Software / Virtual Mode';
+    } else {
+      hwDot.className = 'hw-dot offline';
+      hwText.textContent = 'Printer Disconnected';
+    }
+  }
+
   // Driver Settings
-  if (hw.driverSettings && hw.driverSettings.length > 0) {
+  if (hw.driverSettings) {
     activeDriverProfiles = hw.driverSettings;
     populateDriverSelect(hw.driverSettings, hw.selectedPrinter);
   }
 
   // Connectivity
   if (hw.connection) {
-    document.getElementById('diag-usb-status').textContent = hw.connection.usbStatus || 'Connected (USB Host Port)';
-    document.getElementById('diag-wifi-status').textContent = hw.connection.wifiStatus || 'Online (WLAN Link)';
+    const usbEl = document.getElementById('diag-usb-status');
+    if (usbEl) {
+      usbEl.textContent = hw.connection.usbStatus || 'Disconnected (No USB Printer Plugged In)';
+      usbEl.className = hw.physicalPrinterConnected ? 'badge-success' : 'badge-offline';
+    }
+
+    const wifiEl = document.getElementById('diag-wifi-status');
+    if (wifiEl) {
+      wifiEl.textContent = hw.connection.wifiStatus || 'No Network Printer Detected';
+      wifiEl.className = (hw.physicalPrinterConnected && !hw.connection.usbStatus.includes('USB')) 
+        ? 'badge-success' 
+        : (hw.connection.wifiStatus && hw.connection.wifiStatus.includes('Online') ? 'badge-warning' : 'badge-offline');
+    }
   }
 
   // Spooler
   if (hw.spooler) {
-    document.getElementById('diag-spooler-status').textContent = `${hw.spooler.system} (${hw.spooler.queueJobs} active jobs)`;
-  }
-
-  // Paper Trays
-  if (hw.paperTrays) {
-    const t1 = hw.paperTrays.tray1;
-    const t2 = hw.paperTrays.tray2;
-    if (t1) {
-      document.getElementById('diag-tray1-val').textContent = `${t1.currentSheets} / ${t1.maxSheets} sheets`;
-      document.getElementById('diag-tray1-fill').style.width = `${t1.percent}%`;
-    }
-    if (t2) {
-      document.getElementById('diag-tray2-val').textContent = `${t2.currentSheets} / ${t2.maxSheets} sheets`;
-      document.getElementById('diag-tray2-fill').style.width = `${t2.percent}%`;
+    const spoolerEl = document.getElementById('diag-spooler-status');
+    if (spoolerEl) {
+      spoolerEl.textContent = `${hw.spooler.system} (${hw.spooler.queueJobs || 0} active jobs)`;
     }
   }
 
-  // Ink Cartridges
-  if (hw.toner) {
-    if (hw.toner.black) {
-      document.getElementById('diag-toner-k').style.height = `${hw.toner.black.percent}%`;
-      document.getElementById('diag-toner-k-pct').textContent = `${hw.toner.black.percent}%`;
+  // Paper Trays & Offline Alert
+  const suppliesNotice = document.getElementById('diag-supplies-offline-notice');
+  const suppliesContainer = document.getElementById('diag-supplies-container');
+  const tonerNotice = document.getElementById('diag-toner-offline-notice');
+  const tonerGrid = document.getElementById('diag-toner-grid');
+
+  if (hw.hasPhysicalSupplies) {
+    if (suppliesNotice) suppliesNotice.style.display = 'none';
+    if (suppliesContainer) suppliesContainer.style.display = 'block';
+    if (tonerNotice) tonerNotice.style.display = 'none';
+    if (tonerGrid) tonerGrid.style.opacity = '1';
+
+    if (hw.paperTrays) {
+      const t1 = hw.paperTrays.tray1;
+      const t2 = hw.paperTrays.tray2;
+      if (t1) {
+        document.getElementById('diag-tray1-val').textContent = `${t1.currentSheets} / ${t1.maxSheets} sheets`;
+        document.getElementById('diag-tray1-fill').style.width = `${t1.percent}%`;
+      }
+      if (t2) {
+        document.getElementById('diag-tray2-val').textContent = `${t2.currentSheets} / ${t2.maxSheets} sheets`;
+        document.getElementById('diag-tray2-fill').style.width = `${t2.percent}%`;
+      }
     }
-    if (hw.toner.cyan) {
-      document.getElementById('diag-toner-c').style.height = `${hw.toner.cyan.percent}%`;
-      document.getElementById('diag-toner-c-pct').textContent = `${hw.toner.cyan.percent}%`;
+
+    if (hw.toner) {
+      if (hw.toner.black) {
+        document.getElementById('diag-toner-k').style.height = `${hw.toner.black.percent}%`;
+        document.getElementById('diag-toner-k-pct').textContent = `${hw.toner.black.percent}%`;
+      }
+      if (hw.toner.cyan) {
+        document.getElementById('diag-toner-c').style.height = `${hw.toner.cyan.percent}%`;
+        document.getElementById('diag-toner-c-pct').textContent = `${hw.toner.cyan.percent}%`;
+      }
+      if (hw.toner.magenta) {
+        document.getElementById('diag-toner-m').style.height = `${hw.toner.magenta.percent}%`;
+        document.getElementById('diag-toner-m-pct').textContent = `${hw.toner.magenta.percent}%`;
+      }
+      if (hw.toner.yellow) {
+        document.getElementById('diag-toner-y').style.height = `${hw.toner.yellow.percent}%`;
+        document.getElementById('diag-toner-y-pct').textContent = `${hw.toner.yellow.percent}%`;
+      }
     }
-    if (hw.toner.magenta) {
-      document.getElementById('diag-toner-m').style.height = `${hw.toner.magenta.percent}%`;
-      document.getElementById('diag-toner-m-pct').textContent = `${hw.toner.magenta.percent}%`;
-    }
-    if (hw.toner.yellow) {
-      document.getElementById('diag-toner-y').style.height = `${hw.toner.yellow.percent}%`;
-      document.getElementById('diag-toner-y-pct').textContent = `${hw.toner.yellow.percent}%`;
-    }
+  } else {
+    // Offline state: hide fake supplies and show truthful notices
+    if (suppliesNotice) suppliesNotice.style.display = 'block';
+    if (suppliesContainer) suppliesContainer.style.display = 'none';
+    if (tonerNotice) tonerNotice.style.display = 'block';
+    if (tonerGrid) tonerGrid.style.opacity = '0.35';
+
+    document.getElementById('diag-tray1-val').textContent = 'Offline (0 / 500)';
+    document.getElementById('diag-tray1-fill').style.width = '0%';
+    document.getElementById('diag-tray2-val').textContent = 'Offline (0 / 250)';
+    document.getElementById('diag-tray2-fill').style.width = '0%';
+
+    ['k', 'c', 'm', 'y'].forEach(c => {
+      const bar = document.getElementById(`diag-toner-${c}`);
+      const pct = document.getElementById(`diag-toner-${c}-pct`);
+      if (bar) bar.style.height = '0%';
+      if (pct) pct.textContent = '0%';
+    });
   }
 }
 

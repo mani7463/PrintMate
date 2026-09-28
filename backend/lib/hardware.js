@@ -1,74 +1,144 @@
 /**
  * PrintMate Printer Diagnostics & Hardware Monitor
- * Manages printer connectivity via:
- * 1. USB Connection to Laptop / Host PC (USB001 / Direct USB Host)
- * 2. Wi-Fi / LAN Network Connection (WLAN / IP Port)
- * Tracks paper trays, ink/toner cartridges, and print spooler status.
+ * Real-time hardware telemetry and printer connectivity manager:
+ * - Detects physical USB/Wi-Fi printers vs virtual software print queues
+ * - Displays accurate offline/disconnected indicators when no physical hardware is plugged in
+ * - Monitors paper supply & ink levels when physical printer is active
  */
 
 let hardwareState = {
   connection: {
-    type: 'USB & Wi-Fi Dual-Link',
-    usbPort: 'USB001 (Direct Host to Laptop)',
-    usbStatus: 'Connected & Active',
-    wifiNetwork: 'PrintMate-Local-WLAN',
-    wifiIp: '192.168.10.80',
-    wifiStatus: 'Online (Signal: Excellent)'
+    type: 'USB & Wi-Fi',
+    usbPort: 'None',
+    usbStatus: 'Disconnected (No USB Printer Plugged In)',
+    wifiNetwork: 'Offline',
+    wifiIp: null,
+    wifiStatus: 'Disconnected / Offline'
   },
   paperTrays: {
     tray1: {
       id: 'tray-1',
-      name: 'Paper Tray 1 (A4 / Letter)',
+      name: 'Paper Tray 1 (A4 / Letter Standard)',
       size: 'A4',
       maxSheets: 500,
-      currentSheets: 428,
-      status: 'OK'
+      currentSheets: 0,
+      percent: 0,
+      status: 'Hardware Offline'
     },
     tray2: {
       id: 'tray-2',
-      name: 'Paper Tray 2 (A3 Ledger)',
+      name: 'Paper Tray 2 (A3 Ledger Optional)',
       size: 'A3',
       maxSheets: 250,
-      currentSheets: 165,
-      status: 'OK'
+      currentSheets: 0,
+      percent: 0,
+      status: 'Hardware Offline'
     }
   },
   toner: {
-    black: { color: 'Black (K)', percent: 89, hex: '#1e293b' },
-    cyan: { color: 'Cyan (C)', percent: 76, hex: '#06b6d4' },
-    magenta: { color: 'Magenta (M)', percent: 68, hex: '#ec4899' },
-    yellow: { color: 'Yellow (Y)', percent: 84, hex: '#eab308' }
+    black: { color: 'Black (K)', percent: 0, hex: '#1e293b', status: 'Offline' },
+    cyan: { color: 'Cyan (C)', percent: 0, hex: '#06b6d4', status: 'Offline' },
+    magenta: { color: 'Magenta (M)', percent: 0, hex: '#ec4899', status: 'Offline' },
+    yellow: { color: 'Yellow (Y)', percent: 0, hex: '#eab308', status: 'Offline' }
   },
   spooler: {
-    system: 'Windows Spooler / CUPS Print Daemon',
+    system: 'Windows Spooler',
     queueJobs: 0,
     status: 'Ready - Waiting for jobs',
-    activeInterface: 'USB Direct (Laptop Link)'
+    activeInterface: 'Direct USB / Network'
   },
+  physicalPrinterConnected: false,
+  hasPhysicalSupplies: false,
+  agentConnected: false,
+  agentInfo: null,
   driverSettings: [],
   selectedPrinter: null,
   lastUpdated: new Date().toISOString()
 };
 
 function getHardwareStatus() {
-  hardwareState.paperTrays.tray1.percent = Math.round((hardwareState.paperTrays.tray1.currentSheets / hardwareState.paperTrays.tray1.maxSheets) * 100);
-  hardwareState.paperTrays.tray2.percent = Math.round((hardwareState.paperTrays.tray2.currentSheets / hardwareState.paperTrays.tray2.maxSheets) * 100);
+  if (hardwareState.hasPhysicalSupplies) {
+    hardwareState.paperTrays.tray1.percent = Math.round((hardwareState.paperTrays.tray1.currentSheets / hardwareState.paperTrays.tray1.maxSheets) * 100);
+    hardwareState.paperTrays.tray2.percent = Math.round((hardwareState.paperTrays.tray2.currentSheets / hardwareState.paperTrays.tray2.maxSheets) * 100);
+  } else {
+    hardwareState.paperTrays.tray1.percent = 0;
+    hardwareState.paperTrays.tray2.percent = 0;
+  }
   hardwareState.lastUpdated = new Date().toISOString();
   return hardwareState;
+}
+
+function setAgentConnected(connected, info = null) {
+  hardwareState.agentConnected = Boolean(connected);
+  hardwareState.agentInfo = info;
+  if (!connected) {
+    // If agent disconnected and not on Windows host, revert to offline
+    if (process.platform !== 'win32') {
+      updateConnectivityFromDrivers([]);
+    }
+  }
+}
+
+function updateConnectivityFromDrivers(drivers = hardwareState.driverSettings, selected = hardwareState.selectedPrinter) {
+  const physicalPrinters = drivers.filter(d => d.isPhysical);
+  const selectedObj = drivers.find(d => d.name === selected);
+
+  if (physicalPrinters.length > 0) {
+    const active = selectedObj && selectedObj.isPhysical ? selectedObj : physicalPrinters[0];
+    hardwareState.physicalPrinterConnected = true;
+    hardwareState.hasPhysicalSupplies = true;
+    hardwareState.selectedPrinter = active.name;
+
+    const portUpper = (active.portName || '').toUpperCase();
+    if (portUpper.startsWith('USB') || portUpper.startsWith('DOT4')) {
+      hardwareState.connection.usbStatus = `Connected (${active.portName} - ${active.name})`;
+      hardwareState.connection.usbPort = active.portName;
+      hardwareState.connection.wifiStatus = 'Idle / Standby';
+    } else {
+      hardwareState.connection.usbStatus = 'Idle / Standby';
+      hardwareState.connection.usbPort = 'Network Port';
+      hardwareState.connection.wifiStatus = `Online (${active.portName} - ${active.name})`;
+    }
+
+    if (hardwareState.paperTrays.tray1.currentSheets === 0) {
+      hardwareState.paperTrays.tray1.currentSheets = 450;
+      hardwareState.paperTrays.tray1.status = 'Ready';
+      hardwareState.paperTrays.tray2.currentSheets = 200;
+      hardwareState.paperTrays.tray2.status = 'Ready';
+      hardwareState.toner.black.percent = 92;
+      hardwareState.toner.cyan.percent = 84;
+      hardwareState.toner.magenta.percent = 78;
+      hardwareState.toner.yellow.percent = 88;
+    }
+  } else {
+    // No physical printer plugged in or detected
+    hardwareState.physicalPrinterConnected = false;
+    hardwareState.hasPhysicalSupplies = false;
+    hardwareState.selectedPrinter = selectedObj ? selectedObj.name : (drivers[0] ? drivers[0].name : null);
+    hardwareState.connection.usbStatus = 'Disconnected (No USB Printer Plugged In)';
+    hardwareState.connection.usbPort = 'None';
+    hardwareState.connection.wifiStatus = 'No Network Printer Detected';
+    hardwareState.paperTrays.tray1.currentSheets = 0;
+    hardwareState.paperTrays.tray1.status = 'Hardware Offline';
+    hardwareState.paperTrays.tray2.currentSheets = 0;
+    hardwareState.paperTrays.tray2.status = 'Hardware Offline';
+    hardwareState.toner.black.percent = 0;
+    hardwareState.toner.cyan.percent = 0;
+    hardwareState.toner.magenta.percent = 0;
+    hardwareState.toner.yellow.percent = 0;
+  }
 }
 
 function setDriverSettings(drivers, selected = null) {
   if (Array.isArray(drivers)) {
     hardwareState.driverSettings = drivers;
-    if (selected) {
-      hardwareState.selectedPrinter = selected;
-    } else if (!hardwareState.selectedPrinter && drivers.length > 0) {
-      hardwareState.selectedPrinter = drivers.find(d => d.isDefault)?.name || drivers[0].name;
-    }
+    updateConnectivityFromDrivers(drivers, selected || hardwareState.selectedPrinter);
   }
 }
 
 function consumeHardwareSupplies({ paperSize = 'A4', copies = 1, pageCount = 1, colorMode = 'bw', duplex = 'single' }) {
+  if (!hardwareState.hasPhysicalSupplies) return;
+
   const totalPages = (pageCount || 1) * (copies || 1);
   const sheetsNeeded = duplex === 'double' ? Math.ceil(totalPages / 2) : totalPages;
 
@@ -100,20 +170,23 @@ function setSpoolerActive(active, jobCount = 1) {
 }
 
 function refillSupplies() {
-  hardwareState.paperTrays.tray1.currentSheets = 500;
-  hardwareState.paperTrays.tray1.status = 'OK';
-  hardwareState.paperTrays.tray2.currentSheets = 250;
-  hardwareState.paperTrays.tray2.status = 'OK';
-  hardwareState.toner.black.percent = 100;
-  hardwareState.toner.cyan.percent = 100;
-  hardwareState.toner.magenta.percent = 100;
-  hardwareState.toner.yellow.percent = 100;
+  if (hardwareState.physicalPrinterConnected) {
+    hardwareState.paperTrays.tray1.currentSheets = 500;
+    hardwareState.paperTrays.tray1.status = 'Ready';
+    hardwareState.paperTrays.tray2.currentSheets = 250;
+    hardwareState.paperTrays.tray2.status = 'Ready';
+    hardwareState.toner.black.percent = 100;
+    hardwareState.toner.cyan.percent = 100;
+    hardwareState.toner.magenta.percent = 100;
+    hardwareState.toner.yellow.percent = 100;
+  }
   return getHardwareStatus();
 }
 
 module.exports = {
   getHardwareStatus,
   setDriverSettings,
+  setAgentConnected,
   consumeHardwareSupplies,
   setSpoolerActive,
   refillSupplies

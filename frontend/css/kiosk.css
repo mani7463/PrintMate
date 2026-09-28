@@ -732,6 +732,81 @@ body {
   font-size: 0.78rem;
 }
 
+.badge-warning {
+  color: #fbbf24;
+  font-weight: 600;
+  font-size: 0.78rem;
+}
+
+.badge-offline {
+  color: #f87171;
+  font-weight: 600;
+  font-size: 0.78rem;
+}
+
+.badge-virtual {
+  color: #a78bfa;
+  font-weight: 600;
+  font-size: 0.78rem;
+}
+
+.diag-offline-alert {
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-radius: var(--radius-sm);
+  padding: 0.65rem 0.85rem;
+  font-size: 0.76rem;
+  color: #fca5a5;
+  line-height: 1.45;
+  margin-top: 0.4rem;
+}
+
+.diag-offline-alert strong {
+  color: #f87171;
+}
+
+/* Header Hardware Indicator Badge */
+.kiosk-hw-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid var(--border-glass);
+  padding: 0.35rem 0.75rem;
+  border-radius: 9999px;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.kiosk-hw-badge:hover {
+  background: rgba(30, 41, 59, 0.8);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.hw-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.hw-dot.online {
+  background: #34d399;
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.6);
+}
+
+.hw-dot.offline {
+  background: #f87171;
+  box-shadow: 0 0 8px rgba(248, 113, 113, 0.5);
+}
+
+.hw-dot.virtual {
+  background: #a78bfa;
+  box-shadow: 0 0 8px rgba(167, 139, 250, 0.5);
+}
+
 .diag-bar {
   width: 100%;
   height: 6px;

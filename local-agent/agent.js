@@ -54,15 +54,15 @@ setInterval(() => {
 async function reportDeviceDrivers() {
   try {
     const drivers = await queryDeviceDrivers();
-    if (drivers && drivers.length > 0) {
-      socket.emit('agent:hardware_report', {
-        hostname: require('os').hostname(),
-        platform: process.platform,
-        drivers,
-        timestamp: new Date().toISOString()
-      });
-      console.log(`📋 Reported specs for ${drivers.length} device driver(s) to backend.`);
-    }
+    const physicalConnected = drivers.some(d => d.isPhysical);
+    socket.emit('agent:hardware_report', {
+      hostname: require('os').hostname(),
+      platform: process.platform,
+      drivers,
+      physicalPrinterConnected: physicalConnected,
+      timestamp: new Date().toISOString()
+    });
+    console.log(`📋 Reported ${drivers.length} device driver(s) to backend. Physical Printer Connected: ${physicalConnected ? 'YES' : 'NO'}`);
   } catch (err) {
     console.warn('⚠️ Driver report error:', err.message);
   }
@@ -108,22 +108,60 @@ $printers | ConvertTo-Json -Compress
       try {
         let raw = JSON.parse(stdout.trim());
         if (!Array.isArray(raw)) raw = [raw];
-        const drivers = raw.map((p, idx) => ({
-          name: p.Name,
-          driverName: p.DriverName || 'Windows Universal Driver',
-          driverVersion: p.DriverVersion || 'v4',
-          manufacturer: p.Manufacturer || 'OEM Hardware',
-          portName: p.PortName || 'USB Host Port',
-          status: p.Status || 'Ready',
-          jobCount: p.JobCount || 0,
-          shared: Boolean(p.Shared),
-          color: p.Color !== false,
-          duplex: p.Duplex === '1' || p.Duplex === 'TwoSidedLongEdge' ? 'Two-Sided (Duplex)' : (p.Duplex === '0' || p.Duplex === 'OneSided' ? '1-Sided (Simplex)' : p.Duplex),
-          collate: p.Collate !== false,
-          paperSize: p.PaperSize === '1' ? 'Letter' : (p.PaperSize === '9' ? 'A4' : (p.PaperSize || 'A4')),
-          isDefault: idx === 0,
-          printProcessor: p.PrintProcessor || 'winprint'
-        }));
+
+        const drivers = raw.map((p) => {
+          const portUpper = (p.PortName || '').toUpperCase();
+          const nameUpper = (p.Name || '').toUpperCase();
+
+          const isVirtual = 
+            portUpper.includes('PORTPROMPT') || 
+            portUpper.includes('NUL:') || 
+            portUpper.includes('AD_PORT') || 
+            portUpper.includes('FILE:') || 
+            portUpper.includes('SHRFAX') || 
+            portUpper.includes('XPS') ||
+            nameUpper.includes('PDF') || 
+            nameUpper.includes('ONENOTE') || 
+            nameUpper.includes('ANYDESK') || 
+            nameUpper.includes('FAX') || 
+            nameUpper.includes('XPS');
+
+          const isPhysical = !isVirtual && (
+            portUpper.startsWith('USB') || 
+            portUpper.startsWith('DOT4') || 
+            portUpper.startsWith('WSD') || 
+            portUpper.startsWith('LPT') || 
+            portUpper.startsWith('COM') || 
+            portUpper.startsWith('BTH') ||
+            /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(portUpper) ||
+            portUpper.includes('IP_') ||
+            portUpper.includes('TCP') ||
+            portUpper.includes('NETWORK')
+          );
+
+          return {
+            name: p.Name,
+            driverName: p.DriverName || (isPhysical ? 'OEM Printer Driver' : 'Software Virtual Driver'),
+            driverVersion: p.DriverVersion || 'v4',
+            manufacturer: p.Manufacturer || (isPhysical ? 'OEM Hardware' : 'Microsoft / Virtual Software'),
+            portName: p.PortName || (isPhysical ? 'USB Port' : 'Software Queue'),
+            status: isPhysical ? (p.Status || 'Ready') : 'Virtual / Software Queue',
+            jobCount: p.JobCount || 0,
+            shared: Boolean(p.Shared),
+            color: p.Color !== false,
+            duplex: p.Duplex === '1' || p.Duplex === 'TwoSidedLongEdge' ? 'Two-Sided (Duplex)' : (p.Duplex === '0' || p.Duplex === 'OneSided' ? '1-Sided (Simplex)' : p.Duplex),
+            collate: p.Collate !== false,
+            paperSize: p.PaperSize === '1' ? 'Letter' : (p.PaperSize === '9' ? 'A4' : (p.PaperSize || 'A4')),
+            isDefault: isPhysical,
+            isPhysical: isPhysical,
+            category: isPhysical ? 'Physical Hardware Printer' : 'Virtual / Software Output',
+            printProcessor: p.PrintProcessor || 'winprint'
+          };
+        });
+
+        // Sort so physical printers appear first
+        drivers.sort((a, b) => (b.isPhysical ? 1 : 0) - (a.isPhysical ? 1 : 0));
+
         resolve(drivers);
       } catch (_) {
         resolve([]);

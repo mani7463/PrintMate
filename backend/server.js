@@ -19,7 +19,7 @@ const {
   removeSession, 
   sweepExpiredSessions 
 } = require('./lib/sessions');
-const { getHardwareStatus, setDriverSettings, refillSupplies } = require('./lib/hardware');
+const { getHardwareStatus, setDriverSettings, setAgentConnected, refillSupplies } = require('./lib/hardware');
 
 // Initialize printer drivers status asynchronously on startup
 getDetailedPrinterDriverSettings().then(drivers => {
@@ -721,13 +721,24 @@ app.post('/api/session/:id/reset', async (req, res) => {
 io.on('connection', (socket) => {
   // Listen for Local Hardware Agent (laptop connected to USB printer)
   socket.on('agent:register', (data) => {
+    socket.isAgent = true;
+    setAgentConnected(true, data);
     console.log('🖨️ [Hardware Bridge]: Local agent connected from', data?.hostname, `(${data?.platform})`);
+    io.emit('hardware:status', getHardwareStatus());
   });
 
   socket.on('agent:hardware_report', (data) => {
     if (data?.drivers && Array.isArray(data.drivers)) {
       setDriverSettings(data.drivers, data.selectedPrinter);
-      console.log(`🖨️ [Hardware Bridge]: Received driver specs for ${data.drivers.length} printers from local agent.`);
+      console.log(`🖨️ [Hardware Bridge]: Received driver specs for ${data.drivers.length} printers from local agent. Physical connected: ${data.physicalPrinterConnected ? 'YES' : 'NO'}`);
+      io.emit('hardware:status', getHardwareStatus());
+    }
+  });
+
+  socket.on('disconnect', () => {
+    if (socket.isAgent) {
+      console.warn('⚠️ [Hardware Bridge]: Local hardware agent disconnected.');
+      setAgentConnected(false);
       io.emit('hardware:status', getHardwareStatus());
     }
   });

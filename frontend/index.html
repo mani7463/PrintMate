@@ -27,6 +27,10 @@
 
     <!-- Minimal Header Controls -->
     <div class="header-right">
+      <div class="kiosk-hw-badge" id="kiosk-hw-indicator" title="Hardware Connectivity Status">
+        <span class="hw-dot offline" id="hw-indicator-dot"></span>
+        <span id="hw-indicator-text">Printer Disconnected</span>
+      </div>
       <button class="btn-icon" id="btn-fullscreen" title="Toggle Fullscreen">
         <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
@@ -242,57 +246,65 @@
           <div class="diag-title">Connection Status</div>
           <div class="diag-row">
             <span>USB to Laptop Link</span>
-            <span class="badge-success" id="diag-usb-status">Connected (USB Host Port)</span>
+            <span class="badge-offline" id="diag-usb-status">Disconnected (No USB Printer Plugged In)</span>
           </div>
           <div class="diag-row">
             <span>Wi-Fi Network</span>
-            <span class="badge-success" id="diag-wifi-status">Online (WLAN Link)</span>
+            <span class="badge-offline" id="diag-wifi-status">No Network Printer Detected</span>
           </div>
           <div class="diag-row">
             <span>Print Spooler</span>
-            <span id="diag-spooler-status">Windows Spooler Active (0 queued jobs)</span>
+            <span id="diag-spooler-status">Windows Spooler Idle (0 queued jobs)</span>
           </div>
         </div>
 
         <!-- Paper Trays -->
         <div class="diag-block">
           <div class="diag-title">Paper Supply</div>
-          <div class="diag-row">
-            <span>Tray 1 (A4 / Letter Standard)</span>
-            <span class="mono" id="diag-tray1-val">428 / 500 sheets</span>
+          <div id="diag-supplies-offline-notice" class="diag-offline-alert">
+            ⚠️ <strong>No Physical Printer Connected:</strong> Paper trays and telemetry will activate automatically once a physical printer is connected via USB or local network.
           </div>
-          <div class="diag-bar"><div class="diag-fill" id="diag-tray1-fill" style="width:86%;"></div></div>
+          <div id="diag-supplies-container" style="display:none;">
+            <div class="diag-row">
+              <span>Tray 1 (A4 / Letter Standard)</span>
+              <span class="mono" id="diag-tray1-val">0 / 500 sheets</span>
+            </div>
+            <div class="diag-bar"><div class="diag-fill" id="diag-tray1-fill" style="width:0%;"></div></div>
 
-          <div class="diag-row" style="margin-top:0.75rem;">
-            <span>Tray 2 (A3 Ledger Optional)</span>
-            <span class="mono" id="diag-tray2-val">165 / 250 sheets</span>
+            <div class="diag-row" style="margin-top:0.75rem;">
+              <span>Tray 2 (A3 Ledger Optional)</span>
+              <span class="mono" id="diag-tray2-val">0 / 250 sheets</span>
+            </div>
+            <div class="diag-bar"><div class="diag-fill fill-blue" id="diag-tray2-fill" style="width:0%;"></div></div>
           </div>
-          <div class="diag-bar"><div class="diag-fill fill-blue" id="diag-tray2-fill" style="width:66%;"></div></div>
         </div>
 
         <!-- Ink Cartridges -->
         <div class="diag-block">
           <div class="diag-title">Ink / Toner Cartridge Levels</div>
-          <div class="diag-ink-grid">
+          <div id="diag-toner-offline-notice" class="diag-offline-alert">
+            ⚠️ <strong>Cartridge Telemetry Offline:</strong> Connect a physical printer to view live ink/toner supply levels.
+          </div>
+          <div class="diag-ink-grid" id="diag-toner-grid" style="opacity: 0.35;">
             <div class="ink-item">
               <span>Black (K)</span>
-              <div class="ink-meter"><div class="ink-fill toner-k" id="diag-toner-k" style="height:89%;"></div></div>
-              <span class="mono" id="diag-toner-k-pct">89%</span>
+              <div class="ink-meter"><div class="ink-fill toner-k" id="diag-toner-k" style="height:0%;"></div></div>
+              <span class="mono" id="diag-toner-k-pct">0%</span>
             </div>
             <div class="ink-item">
               <span>Cyan (C)</span>
-              <div class="ink-meter"><div class="ink-fill toner-c" id="diag-toner-c" style="height:76%;"></div></div>
-              <span class="mono" id="diag-toner-c-pct">76%</span>
+              <div class="ink-meter"><div class="ink-fill toner-c" id="diag-toner-c" style="height:0%;"></div></div>
+              <span class="mono" id="diag-toner-c-pct">0%</span>
             </div>
             <div class="ink-item">
               <span>Magenta (M)</span>
-              <div class="ink-meter"><div class="ink-fill toner-m" id="diag-toner-m" style="height:68%;"></div></div>
-              <span class="mono" id="diag-toner-m-pct">68%</span>
+              <div class="ink-meter"><div class="ink-fill toner-m" id="diag-toner-m" style="height:0%;"></div></div>
+              <span class="mono" id="diag-toner-m-pct">0%</span>
             </div>
             <div class="ink-item">
               <span>Yellow (Y)</span>
-              <div class="ink-meter"><div class="ink-fill toner-y" id="diag-toner-y" style="height:84%;"></div></div>
-              <span class="mono" id="diag-toner-y-pct">84%</span>
+              <div class="ink-meter"><div class="ink-fill toner-y" id="diag-toner-y" style="height:0%;"></div></div>
+              <span class="mono" id="diag-toner-y-pct">0%</span>
             </div>
           </div>
         </div>
