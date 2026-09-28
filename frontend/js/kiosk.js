@@ -186,7 +186,10 @@ function initSocket() {
 // Create New Session (Live Session UUID & QR)
 async function initNewSession(customHost = null) {
   try {
-    const payload = customHost ? { host: customHost } : (networkHost ? { host: networkHost } : {});
+    const payload = {
+      frontendUrl: window.location.origin,
+      ...(customHost ? { host: customHost } : (networkHost ? { host: networkHost } : {}))
+    };
     const res = await fetch(`${API_BASE}/api/session/new`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

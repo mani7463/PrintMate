@@ -149,21 +149,40 @@ app.get('/api/history', (req, res) => {
 });
 
 function resolveFrontendMobileUrl(req, sessionId) {
+  // 1. Explicit environment variable set on backend
   let frontendBase = process.env.FRONTEND_URL;
+
+  // 2. Explicit frontend URL sent in request body from kiosk client
+  if (!frontendBase && req && req.body && req.body.frontendUrl) {
+    frontendBase = req.body.frontendUrl;
+  }
+
+  // 3. Origin or Referer header sent by browser
   if (!frontendBase && req && req.headers) {
-    if (req.headers.origin && !req.headers.origin.includes('localhost') && !req.headers.origin.includes('127.0.0.1')) {
-      frontendBase = req.headers.origin;
-    } else if (req.headers.referer && !req.headers.referer.includes('localhost') && !req.headers.referer.includes('127.0.0.1')) {
+    const origin = req.headers.origin;
+    const referer = req.headers.referer;
+    if (origin && !origin.includes('localhost') && !origin.includes('127.0.0.1')) {
+      frontendBase = origin;
+    } else if (referer && !referer.includes('localhost') && !referer.includes('127.0.0.1')) {
       try {
-        frontendBase = new URL(req.headers.referer).origin;
+        frontendBase = new URL(referer).origin;
       } catch (_) {}
     }
   }
+
+  // 4. If running in cloud (Render) without frontendBase, never use internal container IP (10.x.x.x)
+  const isCloudEnvironment = !!(process.env.RENDER || process.env.RENDER_EXTERNAL_URL || (process.env.PORT && process.env.PORT === '10000'));
+  if (!frontendBase && isCloudEnvironment) {
+    frontendBase = process.env.RENDER_EXTERNAL_URL || 'https://printmate-tau.vercel.app';
+  }
+
+  // 5. Local development fallback to local Wi-Fi / LAN IP
   if (!frontendBase) {
     const hostOverride = (req && req.body && req.body.host) ? req.body.host : null;
     const primaryIp = hostOverride || getPrimaryIp();
     frontendBase = `http://${primaryIp}:${PORT}`;
   }
+
   return `${frontendBase.replace(/\/+$/, '')}/kiosk/${sessionId}`;
 }
 

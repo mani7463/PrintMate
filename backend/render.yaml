@@ -13,4 +13,4 @@ services:
       - key: NODE_ENV
         value: production
       - key: FRONTEND_URL
-        value: https://your-printmate.vercel.app
+        value: https://printmate-tau.vercel.app

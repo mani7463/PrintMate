@@ -12,7 +12,7 @@ if (queryBackend) {
 const savedBackend = localStorage.getItem('PRINTMATE_BACKEND');
 
 window.PRINTMATE_CONFIG = {
-  // Production Render Backend URL (Update this with your deployed Render service URL)
+  // Production Render Backend URL (Deployed Render service URL)
   BACKEND_URL: savedBackend || (
     (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
       ? 'http://localhost:3000'
