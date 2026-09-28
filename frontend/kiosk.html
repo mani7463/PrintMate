@@ -56,6 +56,15 @@
             <span class="sep">•</span>
             <span>Color: <strong>₹10/pg</strong></span>
           </div>
+
+          <div class="scan-actions-row">
+            <button class="btn-qr-refresh-sub" id="btn-qr-refresh-sub" title="Generate New Session QR">
+              <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              <span>Refresh QR Code</span>
+            </button>
+          </div>
         </div>
 
       </div>
@@ -66,11 +75,11 @@
       <div class="state-card-minimal">
         <div class="spinner-dot"></div>
         <h2 class="hero-title" id="stage-title">Device Connected! Waiting for document upload... ⏳</h2>
-        <p class="hero-subtitle">Smartphone paired. Please pick your document on your phone.</p>
+        <p class="hero-subtitle">Smartphone paired. Please pick your document(s) on your phone.</p>
       </div>
     </div>
 
-    <!-- State 3: Document Uploaded -->
+    <!-- State 3: Document Uploaded (Supports Multi-File) -->
     <div class="kiosk-screen-state" id="state-uploaded" style="display: none;">
       <div class="state-card-minimal">
         <div class="doc-icon-circle">
@@ -79,7 +88,17 @@
           </svg>
         </div>
         <h2 class="hero-title" id="doc-name">document.pdf</h2>
+        
+        <!-- Multi-document list preview -->
+        <div id="doc-multi-container" class="doc-multi-container" style="display: none;">
+          <div class="doc-multi-header">
+            <span id="doc-multi-count">2 Documents Uploaded</span>
+          </div>
+          <div class="doc-multi-chips" id="doc-multi-chips"></div>
+        </div>
+
         <div class="doc-summary-pills">
+          <span id="doc-files-pill" style="display: none;">1 File</span>
           <span id="doc-pages-pill">1 Page</span>
           <span class="sep">•</span>
           <span id="doc-copies-pill">1 Copy</span>
@@ -100,7 +119,7 @@
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
           </svg>
         </div>
-        <h2 class="hero-title">Printing Document...</h2>
+        <h2 class="hero-title" id="printing-title">Printing Document...</h2>
         
         <div class="minimal-progress-bar">
           <div class="minimal-progress-fill" id="progress-bar"></div>
@@ -132,11 +151,21 @@
 
   </main>
 
-  <!-- Minimal Footer Dock -->
+  <!-- Minimal Footer Dock with Refresh Session & Diagnostics Buttons -->
   <footer class="kiosk-footer">
-    <button class="btn-diagnostics" id="btn-open-diagnostics" title="Printer Diagnostics">
-      🔧 Printer Diagnostics
-    </button>
+    <div class="footer-left">
+      <button class="btn-refresh-session" id="btn-refresh-session" title="Refresh Session & Generate New QR Code">
+        <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+        </svg>
+        <span>Refresh Session</span>
+      </button>
+    </div>
+    <div class="footer-right">
+      <button class="btn-diagnostics" id="btn-open-diagnostics" title="Printer Diagnostics">
+        🔧 Printer Diagnostics
+      </button>
+    </div>
   </footer>
 
   <!-- Printer Diagnostics Modal (Accessible via the bottom button) -->
@@ -144,13 +173,69 @@
     <div class="modal-box">
       <div class="modal-header-row">
         <div>
-          <h3>Printer Diagnostics</h3>
-          <p>Connectivity, paper supply, and ink cartridge levels</p>
+          <h3>Printer Diagnostics & Device Drivers</h3>
+          <p>Real-time driver specifications, connectivity, and supply levels</p>
         </div>
         <button class="btn-close-modal" id="btn-close-diagnostics">✕</button>
       </div>
 
       <div class="diag-sections">
+
+        <!-- Accurate Device Driver Specifications Section -->
+        <div class="diag-block diag-block-drivers">
+          <div class="diag-title-row">
+            <div class="diag-title">Device Driver Specifications</div>
+            <button class="btn-diag-inline" id="btn-diag-refresh-drivers" title="Query live device drivers">🔄 Re-query Drivers</button>
+          </div>
+          
+          <div class="diag-driver-select-box">
+            <label for="diag-driver-select">Active Device:</label>
+            <select id="diag-driver-select" class="diag-select"></select>
+          </div>
+
+          <div class="driver-specs-grid">
+            <div class="spec-item">
+              <span class="spec-label">Driver Name</span>
+              <span class="spec-val mono" id="spec-driver-name">-</span>
+            </div>
+            <div class="spec-item">
+              <span class="spec-label">Driver Version</span>
+              <span class="spec-val mono" id="spec-driver-ver">-</span>
+            </div>
+            <div class="spec-item">
+              <span class="spec-label">Manufacturer</span>
+              <span class="spec-val" id="spec-driver-mfr">-</span>
+            </div>
+            <div class="spec-item">
+              <span class="spec-label">Hardware Port</span>
+              <span class="spec-val mono" id="spec-driver-port">-</span>
+            </div>
+            <div class="spec-item">
+              <span class="spec-label">Device Status</span>
+              <span class="badge-success" id="spec-driver-status">Ready</span>
+            </div>
+            <div class="spec-item">
+              <span class="spec-label">Color Mode</span>
+              <span class="spec-val" id="spec-driver-color">Full Color</span>
+            </div>
+            <div class="spec-item">
+              <span class="spec-label">Duplex Mode</span>
+              <span class="spec-val" id="spec-driver-duplex">1-Sided / 2-Sided</span>
+            </div>
+            <div class="spec-item">
+              <span class="spec-label">Default Paper</span>
+              <span class="spec-val mono" id="spec-driver-paper">A4 Standard</span>
+            </div>
+            <div class="spec-item">
+              <span class="spec-label">Print Spooler</span>
+              <span class="spec-val mono" id="spec-driver-spool">winprint (RAW)</span>
+            </div>
+            <div class="spec-item">
+              <span class="spec-label">Collate Mode</span>
+              <span class="spec-val" id="spec-driver-collate">Supported</span>
+            </div>
+          </div>
+        </div>
         
         <!-- Connectivity -->
         <div class="diag-block">

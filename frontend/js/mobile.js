@@ -1,19 +1,20 @@
 /**
  * PrintMate Customer Mobile Web App (Zero-Install)
  * Features:
- * - Client-side document page counting & canvas preview (PDF, Docx, JPG, PNG)
+ * - Multi-document client-side upload & inspection (PDF, Word, JPG, PNG)
+ * - Accurate client-side page counting per document and aggregated totals
  * - Real-time print configuration: Color Mode (B&W ₹2/pg vs Color ₹10/pg), A4/A3, Duplex, Copies
- * - Real-time dynamic cost estimator updating dynamically based on selections
- * - Payment trigger (UPI / Cards / Mock Gateway) triggering kiosk hardware dispatch on success
- * - Real-time bidirectional synchronization with Kiosk display
+ * - Real-time dynamic cost estimator based on total aggregated pages
+ * - Seamless checkout (UPI / Card / Mock Gateway) triggering kiosk hardware dispatch
+ * - Automatic session disconnect on job completion with clear kiosk new session guidance
  */
 
 const API_BASE = (window.PRINTMATE_CONFIG && window.PRINTMATE_CONFIG.BACKEND_URL) ? window.PRINTMATE_CONFIG.BACKEND_URL : '';
 
 let socket = null;
 let sessionId = null;
-let uploadedFile = null;
-let detectedPageCount = 1;
+let uploadedFiles = [];
+let totalSessionPages = 0;
 let currentTotalCost = 2.0;
 
 // Print configuration state
@@ -80,16 +81,22 @@ function initSocket() {
   });
 
   socket.on('session:state', (data) => {
-    if (data.session && data.session.file) {
-      uploadedFile = data.session.file;
-      detectedPageCount = data.session.file.pageCount || 1;
-      printSettings.pageCount = detectedPageCount;
-      showUploadedFileUI(uploadedFile.originalName, uploadedFile.size, detectedPageCount);
-      updateCostEstimator();
+    if (data.session) {
+      if (Array.isArray(data.session.files) && data.session.files.length > 0) {
+        uploadedFiles = data.session.files;
+        totalSessionPages = data.session.totalPages || uploadedFiles.reduce((acc, f) => acc + (f.pageCount || 1), 0);
+        renderFilesList();
+        updateCostEstimator();
+      } else if (data.session.file) {
+        uploadedFiles = [data.session.file];
+        totalSessionPages = data.session.file.pageCount || 1;
+        renderFilesList();
+        updateCostEstimator();
+      }
     }
   });
 
-  socket.on('session:print_started', (data) => {
+  socket.on('session:print_started', () => {
     switchToTrackerView();
   });
 
@@ -98,16 +105,16 @@ function initSocket() {
     updateProgress(data.progress, data.message);
   });
 
-  socket.on('session:print_completed', (data) => {
+  socket.on('session:print_completed', () => {
     handlePrintFinished();
   });
 
   socket.on('session:wiped', (data) => {
-    handleSessionClosed(data?.message || 'Print job completed. Previous connection closed for security.');
+    handleSessionClosed(data?.message || 'Print job completed. Previous session closed for security.');
   });
 
   socket.on('session:disconnected_by_server', () => {
-    handleSessionClosed('Previous connection closed for security. Ready for next customer.');
+    handleSessionClosed('Previous session closed for security. Ready for next customer.');
   });
 
   socket.on('session:reset', () => {
@@ -119,17 +126,18 @@ function syncSettingsToKiosk() {
   if (socket && socket.connected) {
     socket.emit('client:preview_sync', {
       ...printSettings,
-      pageCount: detectedPageCount,
-      estimatedCost: currentTotalCost
+      pageCount: totalSessionPages || 1,
+      estimatedCost: currentTotalCost,
+      fileCount: uploadedFiles.length
     });
   }
 }
 
-// File Upload & Client-Side Page Counting & Preview
+// Multi-File Upload & Client-Side Page Counting
 function bindDropzone() {
   const dropzone = document.getElementById('dropzone');
   const fileInput = document.getElementById('file-input');
-  const removeBtn = document.getElementById('btn-remove-file');
+  const clearAllBtn = document.getElementById('btn-clear-all');
 
   ['dragenter', 'dragover'].forEach(name => {
     dropzone.addEventListener(name, (e) => {
@@ -146,125 +154,116 @@ function bindDropzone() {
   });
 
   dropzone.addEventListener('drop', (e) => {
-    const files = e.dataTransfer.files;
+    const files = Array.from(e.dataTransfer.files);
     if (files.length > 0) {
-      inspectAndUploadFile(files[0]);
+      inspectAndUploadFilesBatch(files);
     }
   });
 
   fileInput.addEventListener('change', (e) => {
     if (e.target.files && e.target.files.length > 0) {
-      inspectAndUploadFile(e.target.files[0]);
+      inspectAndUploadFilesBatch(Array.from(e.target.files));
+      fileInput.value = '';
     }
   });
 
-  removeBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    uploadedFile = null;
-    fileInput.value = '';
-    document.getElementById('file-card').style.display = 'none';
-    document.getElementById('dropzone').style.display = 'block';
-    document.getElementById('btn-open-payment').disabled = true;
-    detectedPageCount = 1;
-    printSettings.pageCount = 1;
-    updateCostEstimator();
-    const bannerText = document.getElementById('banner-text');
-    if (bannerText) bannerText.textContent = 'Hardware Synchronized. Ready for document upload.';
-  });
+  if (clearAllBtn) {
+    clearAllBtn.addEventListener('click', async () => {
+      if (confirm('Remove all uploaded documents?')) {
+        for (const f of [...uploadedFiles]) {
+          await removeFileFromSession(f.id || f.filename);
+        }
+      }
+    });
+  }
 }
 
-// Client-Side Page Counter & Preview Generator
-async function inspectAndUploadFile(file) {
-  let pageCount = 1;
+// Inspect page counts of multiple files and upload in batch
+async function inspectAndUploadFilesBatch(files) {
+  const bannerText = document.getElementById('banner-text');
+  if (bannerText) bannerText.textContent = `Analyzing ${files.length} document(s)... ⏳`;
 
-  try {
-    if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
-      pageCount = await countPdfPagesAndPreview(file);
-    } else if (file.type.startsWith('image/')) {
+  const filesWithPages = [];
+  for (const file of files) {
+    let pageCount = 1;
+    try {
+      if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
+        pageCount = await countPdfPages(file);
+      } else if (file.type.startsWith('image/')) {
+        pageCount = 1;
+      } else if (file.name.match(/\.(docx?|txt)$/i)) {
+        pageCount = await estimateTextOrDocxPages(file);
+      }
+    } catch (_) {
       pageCount = 1;
-      renderImagePreview(file);
-    } else if (file.name.match(/\.(docx?|txt)$/i)) {
-      pageCount = await estimateTextOrDocxPages(file);
     }
-  } catch (err) {
-    console.warn('Client-side inspection fallback:', err);
-    pageCount = 1;
+    filesWithPages.push({ file, pageCount });
   }
 
-  processSelectedFile(file, pageCount);
+  // Upload to backend
+  const formData = new FormData();
+  filesWithPages.forEach(item => {
+    formData.append('documents', item.file);
+  });
+  formData.append('pageCounts', JSON.stringify(filesWithPages.map(i => i.pageCount)));
+
+  if (bannerText) bannerText.textContent = `Uploading ${files.length} document(s) to secure kiosk buffer... ⏳`;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/session/${sessionId}/upload`, {
+      method: 'POST',
+      body: formData
+    });
+
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Upload failed');
+
+    uploadedFiles = data.files || [];
+    totalSessionPages = data.totalPages || uploadedFiles.reduce((acc, f) => acc + (f.pageCount || 1), 0);
+
+    renderFilesList();
+    updateCostEstimator();
+    syncSettingsToKiosk();
+
+    if (bannerText) bannerText.textContent = `✅ ${uploadedFiles.length} document(s) ready. Configure & proceed to pay.`;
+  } catch (err) {
+    console.error('Batch upload error:', err);
+    if (bannerText) bannerText.textContent = `❌ Upload failed: ${err.message}. Tap to retry.`;
+    alert('Upload failed: ' + err.message);
+  }
 }
 
-// Fast Client-Side PDF Page Counting & Canvas Preview
-function countPdfPagesAndPreview(file) {
-  return Promise.race([
-    new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = async function() {
-        const buffer = reader.result;
+// Fast Client-Side PDF Page Counting
+function countPdfPages(file) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = async function() {
+      const buffer = reader.result;
 
-        // 1. If pdf.js is loaded, use it to get exact count and render page 1 thumbnail
-        if (window.pdfjsLib) {
-          try {
-            const pdf = await window.pdfjsLib.getDocument({ data: buffer }).promise;
-            const numPages = pdf.numPages || 1;
-
-            // Render first page thumbnail to canvas
-            try {
-              const page = await pdf.getPage(1);
-              const canvas = document.getElementById('preview-canvas');
-              const context = canvas.getContext('2d');
-              const viewport = page.getViewport({ scale: 0.25 });
-              canvas.height = viewport.height;
-              canvas.width = viewport.width;
-              await page.render({ canvasContext: context, viewport }).promise;
-              canvas.style.display = 'block';
-              document.getElementById('preview-fallback-icon').style.display = 'none';
-            } catch (renderErr) {
-              console.warn('Thumbnail render fallback:', renderErr);
-            }
-
-            return resolve(numPages);
-          } catch (e) {
-            console.warn('PDF.js parse fallback:', e);
-          }
-        }
-
-        // 2. Fast binary fallback parser: scan PDF byte stream for /Type /Page and /Count
+      if (window.pdfjsLib) {
         try {
-          const text = new TextDecoder('latin1').decode(new Uint8Array(buffer));
-          let matches = text.match(/\/Type\s*\/Page[^s]/g);
-          let pageCount = matches ? matches.length : 1;
+          const pdf = await window.pdfjsLib.getDocument({ data: buffer }).promise;
+          return resolve(pdf.numPages || 1);
+        } catch (_) {}
+      }
 
-          const countMatch = text.match(/\/Count\s+(\d+)/);
-          if (countMatch && parseInt(countMatch[1], 10) > pageCount) {
-            pageCount = parseInt(countMatch[1], 10);
-          }
-
-          resolve(Math.max(1, pageCount));
-        } catch (_) {
-          resolve(1);
+      // Fast binary fallback
+      try {
+        const text = new TextDecoder('latin1').decode(new Uint8Array(buffer));
+        const matches = text.match(/\/Type\s*\/Page[^s]/g);
+        let count = matches ? matches.length : 1;
+        const countMatch = text.match(/\/Count\s+(\d+)/);
+        if (countMatch && parseInt(countMatch[1], 10) > count) {
+          count = parseInt(countMatch[1], 10);
         }
-      };
-
-      reader.onerror = () => resolve(1);
-      reader.readAsArrayBuffer(file);
-    }),
-    new Promise(resolve => setTimeout(() => resolve(1), 2500))
-  ]);
-}
-
-function renderImagePreview(file) {
-  const canvas = document.getElementById('preview-canvas');
-  const ctx = canvas.getContext('2d');
-  const img = new Image();
-  img.onload = () => {
-    canvas.width = 70;
-    canvas.height = 90;
-    ctx.drawImage(img, 0, 0, 70, 90);
-    canvas.style.display = 'block';
-    document.getElementById('preview-fallback-icon').style.display = 'none';
-  };
-  img.src = URL.createObjectURL(file);
+        resolve(Math.max(1, count));
+      } catch (_) {
+        resolve(1);
+      }
+    };
+    reader.onerror = () => resolve(1);
+    reader.readAsArrayBuffer(file);
+  });
 }
 
 function estimateTextOrDocxPages(file) {
@@ -285,53 +284,81 @@ function estimateTextOrDocxPages(file) {
   });
 }
 
-async function processSelectedFile(file, pageCount = 1) {
-  detectedPageCount = pageCount;
-  printSettings.pageCount = pageCount;
-
-  showUploadedFileUI(file.name, file.size, pageCount);
-  updateCostEstimator();
-
-  const bannerText = document.getElementById('banner-text');
-  if (bannerText) bannerText.textContent = `Uploading ${file.name}... ⏳`;
-
-  // Upload to server
-  const formData = new FormData();
-  formData.append('document', file);
-  formData.append('pageCount', pageCount);
-
+// Remove an individual file from the multi-document list
+async function removeFileFromSession(fileId) {
   try {
-    const res = await fetch(`${API_BASE}/api/session/${sessionId}/upload`, {
+    const res = await fetch(`${API_BASE}/api/session/${sessionId}/file/remove`, {
       method: 'POST',
-      body: formData
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fileId })
     });
-
     const data = await res.json();
-    if (!data.success) throw new Error(data.error || 'Upload failed');
-
-    uploadedFile = data.file;
-    document.getElementById('btn-open-payment').disabled = false;
-    if (bannerText) bannerText.textContent = `✅ ${file.name} uploaded. Choose settings & proceed to pay.`;
-    syncSettingsToKiosk();
+    if (data.success) {
+      uploadedFiles = data.files || [];
+      totalSessionPages = data.totalPages || uploadedFiles.reduce((acc, f) => acc + (f.pageCount || 1), 0);
+      renderFilesList();
+      updateCostEstimator();
+      syncSettingsToKiosk();
+    }
   } catch (err) {
-    console.error('Upload failed:', err);
-    if (bannerText) bannerText.textContent = `❌ Upload failed: ${err.message}. Please tap to retry.`;
-    alert('Upload failed: ' + err.message);
+    console.warn('Remove file error:', err);
   }
 }
 
-function showUploadedFileUI(name, size, pages) {
+// Render multi-document file cards in the UI
+function renderFilesList() {
   const dropzone = document.getElementById('dropzone');
-  const fileCard = document.getElementById('file-card');
-  const fileName = document.getElementById('file-name');
-  const fileSize = document.getElementById('file-size');
-  const filePages = document.getElementById('file-pages-badge');
+  const container = document.getElementById('files-container');
+  const listEl = document.getElementById('files-list');
+  const countBadge = document.getElementById('files-count-badge');
+  const totalPagesBadge = document.getElementById('files-total-pages');
+  const payBtn = document.getElementById('btn-open-payment');
+
+  if (uploadedFiles.length === 0) {
+    dropzone.style.display = 'block';
+    container.style.display = 'none';
+    if (payBtn) payBtn.disabled = true;
+    return;
+  }
 
   dropzone.style.display = 'none';
-  fileCard.style.display = 'flex';
-  fileName.textContent = name;
-  fileSize.textContent = formatBytes(size);
-  filePages.textContent = `${pages} ${pages > 1 ? 'Pages Detected' : 'Page Detected'}`;
+  container.style.display = 'flex';
+  if (payBtn) payBtn.disabled = false;
+
+  countBadge.textContent = `${uploadedFiles.length} ${uploadedFiles.length > 1 ? 'Documents' : 'Document'}`;
+  totalPagesBadge.textContent = `${totalSessionPages} ${totalSessionPages > 1 ? 'Total Pages' : 'Page'}`;
+
+  listEl.innerHTML = uploadedFiles.map((file) => `
+    <div class="file-item-row" data-id="${file.id || file.filename}">
+      <div class="file-item-left">
+        <div class="file-item-icon">
+          <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+        </div>
+        <div class="file-item-details">
+          <div class="file-item-name" title="${escapeHtml(file.originalName)}">${escapeHtml(file.originalName)}</div>
+          <div class="file-item-sub">
+            <span>${formatBytes(file.size || 0)}</span>
+            <span>•</span>
+            <span class="page-tag">${file.pageCount || 1} ${file.pageCount > 1 ? 'Pages' : 'Page'}</span>
+          </div>
+        </div>
+      </div>
+      <button class="btn-file-del" data-action="delete" title="Remove document">✕</button>
+    </div>
+  `).join('');
+
+  // Bind delete handlers
+  listEl.querySelectorAll('[data-action="delete"]').forEach((btn, index) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const targetFile = uploadedFiles[index];
+      if (targetFile) {
+        removeFileFromSession(targetFile.id || targetFile.filename);
+      }
+    });
+  });
 }
 
 // Print Configuration Controls
@@ -393,41 +420,36 @@ function bindSettingsControls() {
   });
 }
 
-// Real-Time Dynamic Cost Estimator
+// Dynamic Cost Estimator
 function updateCostEstimator() {
-  const pages = detectedPageCount || 1;
+  const pages = totalSessionPages || 1;
   const copies = printSettings.copies || 1;
   const isColor = printSettings.colorMode === 'color';
   const isA3 = printSettings.paperSize === 'A3';
   const isDuplex = printSettings.duplex === 'double';
 
-  // Base pricing matrix:
-  // B&W A4: ₹2/pg | B&W A3: ₹4/pg
-  // Color A4: ₹10/pg | Color A3: ₹15/pg
   let ratePerPage = isColor ? (isA3 ? 15 : 10) : (isA3 ? 4 : 2);
   let total = pages * copies * ratePerPage;
   currentTotalCost = total;
 
   const formattedCost = `₹${total.toFixed(2)}`;
 
-  // Update Estimator Card
   document.getElementById('cost-total-display').textContent = formattedCost;
   document.getElementById('cost-final-amount').textContent = formattedCost;
   document.getElementById('cost-subtotal-val').textContent = formattedCost;
 
+  const docsLabel = uploadedFiles.length > 1 ? ` (${uploadedFiles.length} Docs)` : '';
   document.getElementById('cost-pages-detail').textContent = 
-    `${pages} ${pages > 1 ? 'Pages' : 'Page'} × ${copies} ${copies > 1 ? 'Copies' : 'Copy'} ${isDuplex ? '(2-Sided Duplex)' : ''}`;
+    `${pages} ${pages > 1 ? 'Pages' : 'Page'}${docsLabel} × ${copies} ${copies > 1 ? 'Copies' : 'Copy'} ${isDuplex ? '(2-Sided)' : ''}`;
 
   document.getElementById('cost-rate-detail').textContent = 
     `${isColor ? 'Color' : 'B&W'} ${isA3 ? 'A3' : 'A4'} @ ₹${ratePerPage}/pg`;
 
-  // Update Pay Button
   const btnPayText = document.getElementById('btn-pay-text');
   if (btnPayText) {
     btnPayText.textContent = `Pay & Print (${formattedCost})`;
   }
 
-  // Update Modal amounts
   document.getElementById('pay-modal-amount').textContent = formattedCost;
   document.querySelectorAll('.pay-btn-amt').forEach(el => {
     el.textContent = total.toFixed(2);
@@ -441,7 +463,7 @@ function bindPaymentModal() {
   const closeBtn = document.getElementById('btn-close-pay-modal');
 
   openBtn.addEventListener('click', () => {
-    if (!uploadedFile) return;
+    if (uploadedFiles.length === 0) return;
     updateUpiQrCode();
     modal.classList.add('open');
   });
@@ -456,7 +478,6 @@ function bindPaymentModal() {
     tab.addEventListener('click', () => {
       tabs.forEach(t => t.classList.remove('active'));
       document.querySelectorAll('.pay-tab-content').forEach(c => c.classList.remove('active'));
-      
       tab.classList.add('active');
       const targetContent = document.getElementById(`tab-content-${tab.dataset.tab}`);
       if (targetContent) targetContent.classList.add('active');
@@ -477,18 +498,14 @@ function bindPaymentModal() {
   document.getElementById('btn-pay-mock').addEventListener('click', () => {
     executePaymentAndHardwareDispatch('MOCK_INSTANT', 'PrintMate FastPay');
   });
-
-  // Another document button
-  document.getElementById('btn-print-another').addEventListener('click', () => {
-    window.location.reload();
-  });
 }
 
 function updateUpiQrCode() {
   const upiUrl = `upi://pay?pa=printmate@kiosk&pn=PrintMate%20PVM&am=${currentTotalCost.toFixed(2)}&cu=INR&tn=Kiosk%20Print%20Job`;
-  // Generate simple QR or fallback image
   const qrImg = document.getElementById('upi-qr-image');
-  qrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(upiUrl)}`;
+  if (qrImg) {
+    qrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(upiUrl)}`;
+  }
 }
 
 // Authorizes Payment & Triggers Kiosk Hardware Dispatch Immediately
@@ -510,7 +527,7 @@ async function executePaymentAndHardwareDispatch(method, identifier) {
         upiId: identifier,
         printSettings: {
           ...printSettings,
-          pageCount: detectedPageCount,
+          pageCount: totalSessionPages,
           simulation: true
         }
       })
@@ -519,10 +536,7 @@ async function executePaymentAndHardwareDispatch(method, identifier) {
     const data = await res.json();
     if (!data.success) throw new Error(data.error || 'Payment failed');
 
-    // Display transaction reference
     document.getElementById('payment-txn-id').textContent = data.payment?.txnId || 'TXN-CONFIRMED';
-
-    // Switch to Synchronized Live Progress Tracker
     switchToTrackerView();
   } catch (err) {
     alert('Payment error: ' + err.message);
@@ -544,22 +558,47 @@ function updateProgress(percent, message) {
   }
 }
 
+// Handle Print Completion: Disconnect mobile and direct customer to scan new QR on kiosk
 function handlePrintFinished() {
-  updateProgress(100, 'Document printed & dispatched to Tray B!');
+  updateProgress(100, 'Print job completed! Paper dispensed to Tray B.');
   document.getElementById('tracker-title').textContent = '🎉 Dispense Complete!';
-  document.getElementById('tracker-desc').textContent = 'Your printed pages have been ejected to the physical collection tray.';
+  document.getElementById('tracker-desc').textContent = 'Your printed pages have been ejected to the physical collection tray at the kiosk.';
 
   const iconBox = document.getElementById('tracker-icon-box');
-  iconBox.style.color = '#10b981';
-  iconBox.style.borderColor = '#10b981';
-  iconBox.innerHTML = `
-    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
-      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7" />
-    </svg>
-  `;
+  if (iconBox) {
+    iconBox.style.color = '#10b981';
+    iconBox.style.borderColor = '#10b981';
+    iconBox.innerHTML = `
+      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7" />
+      </svg>
+    `;
+  }
 
   document.getElementById('mobile-pickup-box').style.display = 'flex';
-  document.getElementById('btn-print-another').style.display = 'flex';
+  
+  // Show Session Closed & Disconnected notification
+  const closedNotice = document.getElementById('session-closed-notice');
+  if (closedNotice) {
+    closedNotice.style.display = 'block';
+  }
+
+  // Update banner text
+  const banner = document.getElementById('connection-banner');
+  const bannerText = document.getElementById('banner-text');
+  if (bannerText) {
+    bannerText.textContent = '🔒 Session Finished & Disconnected for Security.';
+  }
+  if (banner) {
+    banner.style.background = 'rgba(99, 102, 241, 0.15)';
+    banner.style.color = '#c7d2fe';
+  }
+
+  // Disconnect socket cleanly from this session
+  if (socket && socket.connected) {
+    console.log('🔒 Disconnecting mobile socket as job is complete.');
+    socket.disconnect();
+  }
 }
 
 function handleSessionClosed(message) {
@@ -567,10 +606,12 @@ function handleSessionClosed(message) {
   if (desc) {
     desc.innerHTML = `<span style="color:#94a3b8;">${message}</span>`;
   }
-  const btn = document.getElementById('btn-print-another');
-  if (btn) {
-    btn.textContent = 'Scan New Session';
-    btn.style.display = 'flex';
+  const closedNotice = document.getElementById('session-closed-notice');
+  if (closedNotice) {
+    closedNotice.style.display = 'block';
+  }
+  if (socket && socket.connected) {
+    socket.disconnect();
   }
 }
 
@@ -580,4 +621,9 @@ function formatBytes(bytes) {
   const sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }

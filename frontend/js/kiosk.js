@@ -88,6 +88,7 @@ function startKiosk() {
   initNetwork();
   initNewSession();
   bindUIEvents();
+  bindSessionRefresh();
   bindDiagnostics();
 }
 
@@ -133,9 +134,9 @@ function initSocket() {
   });
 
   socket.on('session:file_uploaded', (data) => {
-    console.log('📄 File uploaded:', data.file.originalName);
+    console.log('📄 Files uploaded to session:', data.files?.length || 1);
     sounds.fileUploaded();
-    displayDocumentInfo(data.file);
+    displayDocumentInfo(data.file, data.files, data.totalPages);
     updateStage('UPLOADED');
   });
 
@@ -162,7 +163,7 @@ function initSocket() {
     updateStage('COMPLETED');
   });
 
-  // Security 5-second countdown
+  // Security countdown
   socket.on('session:security_countdown', (data) => {
     updateSecurityCountdown(data.remaining);
   });
@@ -194,6 +195,47 @@ function initSocket() {
   });
 }
 
+// Refresh Session Button Binding
+function bindSessionRefresh() {
+  const refreshBtns = [
+    document.getElementById('btn-refresh-session'),
+    document.getElementById('btn-qr-refresh-sub')
+  ].filter(Boolean);
+
+  refreshBtns.forEach(btn => {
+    btn.addEventListener('click', async () => {
+      btn.classList.add('spinning');
+      await refreshKioskSession();
+      setTimeout(() => btn.classList.remove('spinning'), 600);
+    });
+  });
+}
+
+// Manually trigger a fresh session and new QR code immediately
+async function refreshKioskSession() {
+  try {
+    const payload = {
+      sessionId: currentSessionId,
+      frontendUrl: window.location.origin,
+      ...(networkHost ? { host: networkHost } : {})
+    };
+    const res = await fetch(`${API_BASE}/api/session/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error);
+
+    applySessionData(data);
+    console.log('🔄 Session manually refreshed. New QR & PIN active.');
+  } catch (err) {
+    console.warn('Manual refresh fallback to initNewSession:', err.message);
+    initNewSession();
+  }
+}
+
 // Create New Session (Live Session UUID & QR)
 async function initNewSession(customHost = null) {
   try {
@@ -213,7 +255,8 @@ async function initNewSession(customHost = null) {
     applySessionData(data);
   } catch (err) {
     console.error('Failed to create session:', err);
-    document.getElementById('session-url-text').textContent = 'Error generating QR. Please reload.';
+    const urlText = document.getElementById('session-url-text');
+    if (urlText) urlText.textContent = 'Error generating QR. Please reload.';
   }
 }
 
@@ -261,16 +304,54 @@ function updateStage(stage, extra = {}) {
 }
 
 // Document Info & Dynamic Pricing Sync
-function displayDocumentInfo(file) {
+let currentSessionFiles = [];
+let currentSessionTotalPages = 1;
+
+function displayDocumentInfo(file, files = null, totalPages = null) {
   const docName = document.getElementById('doc-name');
-  if (docName) docName.textContent = file.originalName;
+  const multiContainer = document.getElementById('doc-multi-container');
+  const multiCount = document.getElementById('doc-multi-count');
+  const multiChips = document.getElementById('doc-multi-chips');
+  const filesPill = document.getElementById('doc-files-pill');
   const pagesPill = document.getElementById('doc-pages-pill');
-  if (pagesPill) pagesPill.textContent = `${file.pageCount || 1} ${file.pageCount > 1 ? 'Pages' : 'Page'}`;
+
+  const fileList = (Array.isArray(files) && files.length > 0) ? files : (file ? [file] : []);
+  currentSessionFiles = fileList;
+
+  const computedTotalPages = totalPages || fileList.reduce((acc, f) => acc + (f.pageCount || 1), 0);
+  currentSessionTotalPages = computedTotalPages;
+
+  if (fileList.length > 1) {
+    if (docName) docName.textContent = `${fileList.length} Documents Ready to Print`;
+    if (multiContainer) multiContainer.style.display = 'block';
+    if (multiCount) multiCount.textContent = `${fileList.length} Documents Uploaded (${computedTotalPages} Total Pages)`;
+    if (multiChips) {
+      multiChips.innerHTML = fileList.map(f => `
+        <div class="doc-chip" title="${escapeHtml(f.originalName)}">
+          <span class="doc-chip-name">${escapeHtml(f.originalName)}</span>
+          <span class="doc-chip-pg">${f.pageCount || 1}p</span>
+        </div>
+      `).join('');
+    }
+    if (filesPill) {
+      filesPill.style.display = 'inline-block';
+      filesPill.textContent = `${fileList.length} Files`;
+    }
+  } else if (fileList.length === 1) {
+    const singleFile = fileList[0];
+    if (docName) docName.textContent = singleFile.originalName;
+    if (multiContainer) multiContainer.style.display = 'none';
+    if (filesPill) filesPill.style.display = 'none';
+  }
+
+  if (pagesPill) {
+    pagesPill.textContent = `${computedTotalPages} ${computedTotalPages > 1 ? 'Pages' : 'Page'}`;
+  }
 }
 
 function updateDynamicCostAndSettings(settings) {
   if (!settings) return;
-  const pages = settings.pageCount || 1;
+  const pages = settings.pageCount || currentSessionTotalPages || 1;
   const copies = settings.copies || 1;
   const isColor = settings.colorMode === 'color';
   const isA3 = settings.paperSize === 'A3';
@@ -318,7 +399,9 @@ function updateSecurityCountdown(remaining) {
   if (secondsEl) secondsEl.textContent = Math.max(0, remaining);
 }
 
-// Requirement 4: Dedicated Printer Diagnostics Modal
+// Dedicated Printer Diagnostics & Real Hardware Drivers Modal
+let activeDriverProfiles = [];
+
 function bindDiagnostics() {
   const modal = document.getElementById('diagnostics-modal');
   const openBtn = document.getElementById('btn-open-diagnostics');
@@ -326,12 +409,37 @@ function bindDiagnostics() {
 
   openBtn.addEventListener('click', () => {
     fetchHardwareStatus();
+    fetchDriverDiagnostics();
     modal.classList.add('open');
   });
 
   closeBtn.addEventListener('click', () => {
     modal.classList.remove('open');
   });
+
+  // Re-query device drivers button inside diagnostics
+  const refreshDriversBtn = document.getElementById('btn-diag-refresh-drivers');
+  if (refreshDriversBtn) {
+    refreshDriversBtn.addEventListener('click', async () => {
+      refreshDriversBtn.textContent = 'Querying...';
+      await fetchDriverDiagnostics();
+      setTimeout(() => {
+        refreshDriversBtn.textContent = '🔄 Re-query Drivers';
+      }, 500);
+    });
+  }
+
+  // Device profile selector change
+  const driverSelect = document.getElementById('diag-driver-select');
+  if (driverSelect) {
+    driverSelect.addEventListener('change', () => {
+      const selectedName = driverSelect.value;
+      const profile = activeDriverProfiles.find(d => d.name === selectedName);
+      if (profile) {
+        displayDriverSpecifications(profile);
+      }
+    });
+  }
 
   // Test Print button inside diagnostics
   document.getElementById('btn-diag-test-print').addEventListener('click', async () => {
@@ -368,6 +476,57 @@ function bindDiagnostics() {
   });
 }
 
+async function fetchDriverDiagnostics() {
+  try {
+    const res = await fetch(`${API_BASE}/api/printers/diagnostics`);
+    const data = await res.json();
+    if (data.success && data.drivers) {
+      activeDriverProfiles = data.drivers;
+      populateDriverSelect(data.drivers, data.selectedPrinter);
+    }
+  } catch (err) {
+    console.warn('Driver diagnostics query warning:', err);
+  }
+}
+
+function populateDriverSelect(drivers, selectedName = null) {
+  const select = document.getElementById('diag-driver-select');
+  if (!select || !Array.isArray(drivers) || drivers.length === 0) return;
+
+  select.innerHTML = '';
+  drivers.forEach((drv, i) => {
+    const opt = document.createElement('option');
+    opt.value = drv.name;
+    opt.textContent = `${drv.name} [${drv.status || 'Ready'}]`;
+    if (selectedName ? drv.name === selectedName : (drv.isDefault || i === 0)) {
+      opt.selected = true;
+    }
+    select.appendChild(opt);
+  });
+
+  const active = drivers.find(d => d.name === select.value) || drivers[0];
+  if (active) displayDriverSpecifications(active);
+}
+
+function displayDriverSpecifications(drv) {
+  if (!drv) return;
+  const setEl = (id, val) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = val || '-';
+  };
+
+  setEl('spec-driver-name', drv.driverName || drv.name);
+  setEl('spec-driver-ver', drv.driverVersion || 'v4');
+  setEl('spec-driver-mfr', drv.manufacturer || 'OEM Hardware');
+  setEl('spec-driver-port', drv.portName || drv.port || 'USB Direct');
+  setEl('spec-driver-status', drv.status || 'Ready');
+  setEl('spec-driver-color', drv.color ? 'Full Color (CMYK/RGB)' : 'Monochrome (B&W Only)');
+  setEl('spec-driver-duplex', drv.duplex || '1-Sided / 2-Sided');
+  setEl('spec-driver-paper', drv.paperSize || 'A4 Standard (210×297mm)');
+  setEl('spec-driver-spool', `${drv.printProcessor || 'winprint'} (${drv.jobCount || 0} active jobs)`);
+  setEl('spec-driver-collate', drv.collate ? 'Hardware Supported' : 'Software Fallback');
+}
+
 async function fetchHardwareStatus() {
   try {
     const res = await fetch(`${API_BASE}/api/hardware/status`);
@@ -383,9 +542,15 @@ async function fetchHardwareStatus() {
 function updateDiagnosticsUI(hw) {
   if (!hw) return;
 
+  // Driver Settings
+  if (hw.driverSettings && hw.driverSettings.length > 0) {
+    activeDriverProfiles = hw.driverSettings;
+    populateDriverSelect(hw.driverSettings, hw.selectedPrinter);
+  }
+
   // Connectivity
   if (hw.connection) {
-    document.getElementById('diag-usb-status').textContent = hw.connection.usbStatus || 'Connected (USB001)';
+    document.getElementById('diag-usb-status').textContent = hw.connection.usbStatus || 'Connected (USB Host Port)';
     document.getElementById('diag-wifi-status').textContent = hw.connection.wifiStatus || 'Online (WLAN Link)';
   }
 

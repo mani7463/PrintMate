@@ -8,17 +8,26 @@ const cors = require('cors');
 const QRCode = require('qrcode');
 
 const { getNetworkAddresses, getPrimaryIp } = require('./lib/network');
-const { getInstalledPrinters, printJob, getJobHistory } = require('./lib/printer');
+const { getInstalledPrinters, getDetailedPrinterDriverSettings, printJob, getJobHistory } = require('./lib/printer');
 const { 
   createSession, 
   getSession, 
   updateSession, 
   resetSession, 
   secureWipeSession, 
+  removeSessionFile,
   removeSession, 
   sweepExpiredSessions 
 } = require('./lib/sessions');
-const { getHardwareStatus, refillSupplies } = require('./lib/hardware');
+const { getHardwareStatus, setDriverSettings, refillSupplies } = require('./lib/hardware');
+
+// Initialize printer drivers status asynchronously on startup
+getDetailedPrinterDriverSettings().then(drivers => {
+  if (drivers && drivers.length > 0) {
+    setDriverSettings(drivers);
+    console.log(`🖨️ [Hardware Discovery]: Loaded ${drivers.length} printer driver profiles.`);
+  }
+}).catch(e => console.warn('Printer discovery init warning:', e.message));
 
 const app = express();
 const server = http.createServer(app);
@@ -106,7 +115,14 @@ app.get('/session/:id', (req, res) => {
 });
 
 // API: Hardware Health Monitors
-app.get('/api/hardware/status', (req, res) => {
+app.get('/api/hardware/status', async (req, res) => {
+  const hw = getHardwareStatus();
+  if (!hw.driverSettings || hw.driverSettings.length === 0) {
+    try {
+      const drivers = await getDetailedPrinterDriverSettings();
+      setDriverSettings(drivers);
+    } catch (_) {}
+  }
   res.json({
     success: true,
     hardware: getHardwareStatus()
@@ -117,6 +133,35 @@ app.post('/api/hardware/refill', (req, res) => {
   const hardware = refillSupplies();
   io.emit('hardware:status', hardware);
   res.json({ success: true, hardware });
+});
+
+// API: Printer Diagnostics & Accurate Device Driver Settings
+app.get('/api/printers/diagnostics', async (req, res) => {
+  try {
+    const drivers = await getDetailedPrinterDriverSettings();
+    setDriverSettings(drivers);
+    const hw = getHardwareStatus();
+    res.json({
+      success: true,
+      hardware: hw,
+      drivers: hw.driverSettings || drivers,
+      selectedPrinter: hw.selectedPrinter || (drivers.length > 0 ? drivers[0].name : null)
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// API: Set active printer for diagnostics
+app.post('/api/hardware/select-printer', (req, res) => {
+  const { printerName } = req.body;
+  const hw = getHardwareStatus();
+  if (printerName) {
+    setDriverSettings(hw.driverSettings, printerName);
+  }
+  const updatedHw = getHardwareStatus();
+  io.emit('hardware:status', updatedHw);
+  res.json({ success: true, hardware: updatedHw });
 });
 
 // API: Network Discovery
@@ -232,50 +277,162 @@ app.get('/api/session/:id', (req, res) => {
   });
 });
 
-// API: Upload document for session
+// API: Refresh / New session trigger (for Kiosk Refresh Session button)
+app.post(['/api/session/refresh', '/api/session/:id/refresh'], async (req, res) => {
+  const oldSessionId = (req.params && req.params.id) || (req.body && req.body.sessionId);
+  if (oldSessionId) {
+    secureWipeSession(oldSessionId);
+    console.log(`🔄 [Session-Refresh]: Wiped previous session ${oldSessionId}`);
+  }
+
+  const session = createSession();
+  const mobileUrl = resolveFrontendMobileUrl(req, session.id);
+
+  try {
+    const qrDataUrl = await QRCode.toDataURL(mobileUrl, {
+      margin: 2,
+      width: 420,
+      color: {
+        dark: '#030712',
+        light: '#ffffff'
+      }
+    });
+
+    const responsePayload = {
+      success: true,
+      sessionId: session.id,
+      pin: session.pin,
+      session,
+      mobileUrl,
+      qrDataUrl,
+      hardware: getHardwareStatus()
+    };
+
+    io.emit('kiosk:fresh_session', responsePayload);
+    res.json(responsePayload);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// API: Upload document(s) for session - Supports Single & Multiple Files
 app.post('/api/session/:id/upload', (req, res) => {
   const session = getSession(req.params.id);
   if (!session) {
     return res.status(404).json({ success: false, error: 'Session expired or not found' });
   }
 
-  upload.single('document')(req, res, (err) => {
+  upload.any()(req, res, (err) => {
     if (err) {
       return res.status(400).json({ success: false, error: err.message });
     }
-    if (!req.file) {
-      return res.status(400).json({ success: false, error: 'No document file provided' });
+    const uploadedFiles = req.files || (req.file ? [req.file] : []);
+    if (uploadedFiles.length === 0) {
+      return res.status(400).json({ success: false, error: 'No document files provided' });
     }
 
-    const pageCount = parseInt(req.body.pageCount, 10) || 1;
+    // Parse page counts (can be array or single number)
+    let parsedPageCounts = [];
+    if (req.body.pageCounts) {
+      try {
+        parsedPageCounts = typeof req.body.pageCounts === 'string' ? JSON.parse(req.body.pageCounts) : req.body.pageCounts;
+      } catch (_) {
+        parsedPageCounts = String(req.body.pageCounts).split(',').map(n => parseInt(n.trim(), 10));
+      }
+    }
+    const defaultPageCount = parseInt(req.body.pageCount, 10) || 1;
+
     const backendBase = process.env.RENDER_EXTERNAL_URL || 
                         process.env.BACKEND_URL || 
                         `${req.protocol}://${req.get('host')}`;
 
-    const fileInfo = {
-      originalName: req.file.originalname,
-      filename: req.file.filename,
-      size: req.file.size,
-      mimetype: req.file.mimetype,
-      path: req.file.path,
-      url: `${backendBase.replace(/\/+$/, '')}/uploads/${req.file.filename}`,
-      pageCount: pageCount,
-      uploadedAt: new Date().toISOString()
-    };
+    session.files = session.files || [];
+
+    const newFilesInfo = uploadedFiles.map((file, idx) => {
+      const pageCount = (Array.isArray(parsedPageCounts) && parsedPageCounts[idx]) ? parseInt(parsedPageCounts[idx], 10) : defaultPageCount;
+      const fileInfo = {
+        id: 'file-' + Date.now() + '-' + Math.round(Math.random() * 1e5),
+        originalName: file.originalname,
+        filename: file.filename,
+        size: file.size,
+        mimetype: file.mimetype,
+        path: file.path,
+        url: `${backendBase.replace(/\/+$/, '')}/uploads/${file.filename}`,
+        pageCount: pageCount,
+        uploadedAt: new Date().toISOString()
+      };
+      session.files.push(fileInfo);
+      return fileInfo;
+    });
+
+    session.file = session.files[0];
+    session.totalPages = session.files.reduce((sum, f) => sum + (f.pageCount || 1), 0);
 
     updateSession(session.id, {
-      file: fileInfo,
+      file: session.file,
+      files: session.files,
+      totalPages: session.totalPages,
       stage: 'UPLOADED'
     });
 
     // Notify all connected clients in the session room (Kiosk and Mobile)
     io.to(`session:${session.id}`).emit('session:file_uploaded', {
       sessionId: session.id,
-      file: fileInfo,
+      files: session.files,
+      file: session.file,
+      totalPages: session.totalPages,
+      newFiles: newFilesInfo,
       hardware: getHardwareStatus()
     });
 
-    res.json({ success: true, file: fileInfo });
+    res.json({
+      success: true,
+      files: session.files,
+      file: session.file,
+      totalPages: session.totalPages,
+      newFiles: newFilesInfo
+    });
+  });
+});
+
+// API: Remove a specific file from a multi-file upload session
+app.post('/api/session/:id/file/remove', (req, res) => {
+  const session = getSession(req.params.id);
+  if (!session) {
+    return res.status(404).json({ success: false, error: 'Session expired or not found' });
+  }
+
+  const { fileId } = req.body;
+  if (!fileId) {
+    return res.status(400).json({ success: false, error: 'Missing fileId to remove' });
+  }
+
+  const result = removeSessionFile(session.id, fileId);
+  if (!result) {
+    return res.status(404).json({ success: false, error: 'File not found in active session' });
+  }
+
+  session.totalPages = (session.files || []).reduce((sum, f) => sum + (f.pageCount || 1), 0);
+  updateSession(session.id, {
+    file: session.file,
+    files: session.files,
+    totalPages: session.totalPages,
+    stage: session.files.length > 0 ? 'UPLOADED' : 'CONNECTED'
+  });
+
+  io.to(`session:${session.id}`).emit('session:file_uploaded', {
+    sessionId: session.id,
+    files: session.files,
+    file: session.file,
+    totalPages: session.totalPages,
+    hardware: getHardwareStatus()
+  });
+
+  res.json({
+    success: true,
+    files: session.files,
+    file: session.file,
+    totalPages: session.totalPages
   });
 });
 
@@ -286,9 +443,12 @@ app.post('/api/session/:id/pay', async (req, res) => {
     return res.status(404).json({ success: false, error: 'Session expired or not found' });
   }
 
-  if (!session.file) {
-    return res.status(400).json({ success: false, error: 'No file uploaded yet for this session' });
+  const files = (session.files && session.files.length > 0) ? session.files : (session.file ? [session.file] : []);
+  if (files.length === 0) {
+    return res.status(400).json({ success: false, error: 'No files uploaded yet for this session' });
   }
+
+  const totalPages = files.reduce((sum, f) => sum + (f.pageCount || 1), 0);
 
   const {
     method = 'UPI',
@@ -315,7 +475,7 @@ app.post('/api/session/:id/pay', async (req, res) => {
       orientation: printSettings.orientation || 'portrait',
       paperSize: printSettings.paperSize || 'A4',
       duplex: printSettings.duplex || 'single',
-      pageCount: parseInt(printSettings.pageCount, 10) || session.file.pageCount || 1,
+      pageCount: totalPages,
       simulation: printSettings.simulation !== false
     }
   });
@@ -324,7 +484,9 @@ app.post('/api/session/:id/pay', async (req, res) => {
   io.to(`session:${session.id}`).emit('session:payment_success', {
     sessionId: session.id,
     payment: paymentRecord,
-    settings: session.printSettings
+    settings: session.printSettings,
+    fileCount: files.length,
+    totalPages
   });
 
   // Automatically dispatch print to hardware spooler
@@ -338,9 +500,12 @@ app.post('/api/session/:id/print', async (req, res) => {
     return res.status(404).json({ success: false, error: 'Session expired or not found' });
   }
 
-  if (!session.file) {
-    return res.status(400).json({ success: false, error: 'No file uploaded yet for this session' });
+  const files = (session.files && session.files.length > 0) ? session.files : (session.file ? [session.file] : []);
+  if (files.length === 0) {
+    return res.status(400).json({ success: false, error: 'No files uploaded yet for this session' });
   }
+
+  const totalPages = files.reduce((sum, f) => sum + (f.pageCount || 1), 0);
 
   const {
     copies = 1,
@@ -348,7 +513,7 @@ app.post('/api/session/:id/print', async (req, res) => {
     orientation = 'portrait',
     paperSize = 'A4',
     duplex = 'single',
-    pageCount = 1,
+    pageCount = null,
     printerName = null,
     simulation = false
   } = req.body;
@@ -359,7 +524,7 @@ app.post('/api/session/:id/print', async (req, res) => {
     orientation,
     paperSize,
     duplex,
-    pageCount: parseInt(pageCount, 10) || session.file.pageCount || 1,
+    pageCount: parseInt(pageCount, 10) || totalPages || 1,
     simulation
   };
 
@@ -367,18 +532,22 @@ app.post('/api/session/:id/print', async (req, res) => {
   dispatchPrintWorkflow(session.id, res);
 });
 
-// Helper function to dispatch print workflow and handle 5s auto security reset
+// Helper function to dispatch print workflow and handle auto security reset
 function dispatchPrintWorkflow(sessionId, res = null, paymentInfo = null) {
   const session = getSession(sessionId);
-  if (!session || !session.file) return;
+  if (!session) return;
 
+  const files = (session.files && session.files.length > 0) ? session.files : (session.file ? [session.file] : []);
+  if (files.length === 0) return;
+
+  const totalPages = files.reduce((sum, f) => sum + (f.pageCount || 1), 0);
   const jobId = 'job-' + Date.now().toString(36);
   const printSettings = session.printSettings || {
     copies: 1,
     colorMode: 'bw',
     paperSize: 'A4',
     duplex: 'single',
-    pageCount: session.file.pageCount || 1,
+    pageCount: totalPages || 1,
     simulation: true
   };
 
@@ -391,7 +560,9 @@ function dispatchPrintWorkflow(sessionId, res = null, paymentInfo = null) {
     sessionId: session.id,
     jobId,
     settings: printSettings,
-    file: session.file,
+    files: files,
+    file: files[0],
+    totalPages,
     hardware: getHardwareStatus()
   });
 
@@ -400,6 +571,8 @@ function dispatchPrintWorkflow(sessionId, res = null, paymentInfo = null) {
       success: true,
       message: 'Print job dispatched to hardware spooler',
       jobId,
+      fileCount: files.length,
+      totalPages,
       payment: paymentInfo
     });
   }
@@ -408,16 +581,18 @@ function dispatchPrintWorkflow(sessionId, res = null, paymentInfo = null) {
   io.emit('hardware:print_dispatch', {
     jobId,
     sessionId: session.id,
-    fileName: session.file.originalName,
-    fileUrl: session.file.url,
+    files: files.map(f => ({ fileName: f.originalName, fileUrl: f.url, path: f.path, pageCount: f.pageCount })),
+    fileName: files.map(f => f.originalName).join(', '),
+    fileUrl: files[0]?.url,
     settings: printSettings
   });
 
-  // Execute print job
+  // Execute print job (supports multiple files)
   printJob({
     jobId,
-    filePath: session.file.path,
-    fileName: session.file.originalName,
+    files,
+    filePath: files[0]?.path,
+    fileName: files.map(f => f.originalName).join(', '),
     printerName: null,
     settings: printSettings,
     onProgress: (progress, message) => {
@@ -441,12 +616,13 @@ function dispatchPrintWorkflow(sessionId, res = null, paymentInfo = null) {
         sessionId: session.id,
         jobId,
         result,
+        fileCount: files.length,
         pickupTray: 'Tray B (Physical Output Dispense)',
         hardware: getHardwareStatus()
       });
 
       // Automatically reset, disconnect previous mobile connection, and create new session
-      initiateSecurityWipeCountdown(session.id, 4);
+      initiateSecurityWipeCountdown(session.id, 3);
     })
     .catch((err) => {
       io.to(`session:${session.id}`).emit('session:print_error', {
@@ -458,7 +634,7 @@ function dispatchPrintWorkflow(sessionId, res = null, paymentInfo = null) {
 }
 
 // Automatically reset session, disconnect previous connection, and generate fresh QR
-function initiateSecurityWipeCountdown(sessionId, countdownSeconds = 4) {
+function initiateSecurityWipeCountdown(sessionId, countdownSeconds = 3) {
   let remaining = countdownSeconds;
 
   const timer = setInterval(async () => {
@@ -471,14 +647,14 @@ function initiateSecurityWipeCountdown(sessionId, countdownSeconds = 4) {
     if (remaining < 0) {
       clearInterval(timer);
 
-      // 1. Perform secure disk & memory wipe
+      // 1. Perform secure disk & memory wipe of all files
       secureWipeSession(sessionId);
       console.log(`🛡️ [Auto-Reset]: Session ${sessionId} documents shredded from memory & disk.`);
 
       // 2. Disconnect previous mobile client connection
       io.to(`session:${sessionId}`).emit('session:wiped', {
         sessionId,
-        message: 'Print job completed. Previous connection closed for security.'
+        message: 'Print job completed. Previous session closed for security.'
       });
 
       // Disconnect all sockets currently in this session room
@@ -546,6 +722,14 @@ io.on('connection', (socket) => {
   // Listen for Local Hardware Agent (laptop connected to USB printer)
   socket.on('agent:register', (data) => {
     console.log('🖨️ [Hardware Bridge]: Local agent connected from', data?.hostname, `(${data?.platform})`);
+  });
+
+  socket.on('agent:hardware_report', (data) => {
+    if (data?.drivers && Array.isArray(data.drivers)) {
+      setDriverSettings(data.drivers, data.selectedPrinter);
+      console.log(`🖨️ [Hardware Bridge]: Received driver specs for ${data.drivers.length} printers from local agent.`);
+      io.emit('hardware:status', getHardwareStatus());
+    }
   });
 
   socket.on('agent:print_progress', (data) => {

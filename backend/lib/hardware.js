@@ -45,6 +45,8 @@ let hardwareState = {
     status: 'Ready - Waiting for jobs',
     activeInterface: 'USB Direct (Laptop Link)'
   },
+  driverSettings: [],
+  selectedPrinter: null,
   lastUpdated: new Date().toISOString()
 };
 
@@ -53,6 +55,17 @@ function getHardwareStatus() {
   hardwareState.paperTrays.tray2.percent = Math.round((hardwareState.paperTrays.tray2.currentSheets / hardwareState.paperTrays.tray2.maxSheets) * 100);
   hardwareState.lastUpdated = new Date().toISOString();
   return hardwareState;
+}
+
+function setDriverSettings(drivers, selected = null) {
+  if (Array.isArray(drivers)) {
+    hardwareState.driverSettings = drivers;
+    if (selected) {
+      hardwareState.selectedPrinter = selected;
+    } else if (!hardwareState.selectedPrinter && drivers.length > 0) {
+      hardwareState.selectedPrinter = drivers.find(d => d.isDefault)?.name || drivers[0].name;
+    }
+  }
 }
 
 function consumeHardwareSupplies({ paperSize = 'A4', copies = 1, pageCount = 1, colorMode = 'bw', duplex = 'single' }) {
@@ -100,6 +113,7 @@ function refillSupplies() {
 
 module.exports = {
   getHardwareStatus,
+  setDriverSettings,
   consumeHardwareSupplies,
   setSpoolerActive,
   refillSupplies

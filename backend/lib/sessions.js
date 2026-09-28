@@ -34,6 +34,7 @@ function createSession() {
     stage: 'WAITING_SCAN', // WAITING_SCAN -> CONNECTED -> UPLOADED -> PAYMENT_PENDING -> PRINTING -> COMPLETED -> WIPED
     connectedClients: 0,
     file: null,
+    files: [],
     printSettings: null,
     payment: null,
     job: null
@@ -105,6 +106,18 @@ function secureWipeFile(filePath) {
   return false;
 }
 
+function wipeAllSessionFiles(session) {
+  if (!session) return;
+  if (Array.isArray(session.files)) {
+    session.files.forEach(f => {
+      if (f && f.path) secureWipeFile(f.path);
+    });
+  }
+  if (session.file && session.file.path) {
+    secureWipeFile(session.file.path);
+  }
+}
+
 /**
  * Securely wipes session file and volatile memory
  */
@@ -112,12 +125,11 @@ function secureWipeSession(id) {
   const session = getSession(id);
   if (!session) return null;
 
-  if (session.file && session.file.path) {
-    secureWipeFile(session.file.path);
-  }
+  wipeAllSessionFiles(session);
 
   // Purge file and memory details
   session.file = null;
+  session.files = [];
   session.stage = 'WIPED';
   session.printSettings = null;
   session.payment = null;
@@ -128,18 +140,42 @@ function secureWipeSession(id) {
 }
 
 /**
+ * Removes a specific file from session and shreds it
+ */
+function removeSessionFile(id, fileIdentifier) {
+  const session = getSession(id);
+  if (!session || !Array.isArray(session.files)) return null;
+
+  const index = session.files.findIndex(f => 
+    f.id === fileIdentifier || f.filename === fileIdentifier || f.originalName === fileIdentifier
+  );
+
+  if (index !== -1) {
+    const [removed] = session.files.splice(index, 1);
+    if (removed && removed.path) {
+      secureWipeFile(removed.path);
+    }
+    session.file = session.files.length > 0 ? session.files[0] : null;
+    if (session.files.length === 0) {
+      session.stage = 'CONNECTED';
+    }
+    return { removed, remainingFiles: session.files };
+  }
+  return null;
+}
+
+/**
  * Resets an existing session for a new user, or removes it
  */
 function resetSession(id) {
   const session = getSession(id);
   if (!session) return null;
 
-  if (session.file && session.file.path) {
-    secureWipeFile(session.file.path);
-  }
+  wipeAllSessionFiles(session);
 
   session.stage = 'WAITING_SCAN';
   session.file = null;
+  session.files = [];
   session.printSettings = null;
   session.payment = null;
   session.job = null;
@@ -155,9 +191,7 @@ function removeSession(id) {
   const session = getSession(id);
   if (!session) return;
 
-  if (session.file && session.file.path) {
-    secureWipeFile(session.file.path);
-  }
+  wipeAllSessionFiles(session);
 
   sessions.delete(session.id);
 }
@@ -170,9 +204,7 @@ function sweepExpiredSessions(onExpired) {
   for (const [id, session] of sessions.entries()) {
     if (now > session.expiresAt) {
       console.log(`⏱️ [Auto-Expire]: Session ${session.id} (${session.pin}) expired after 5m inactivity. Shredding memory & disk.`);
-      if (session.file && session.file.path) {
-        secureWipeFile(session.file.path);
-      }
+      wipeAllSessionFiles(session);
       sessions.delete(id);
       if (onExpired) onExpired(session);
     }
@@ -189,6 +221,7 @@ module.exports = {
   getSession,
   updateSession,
   secureWipeSession,
+  removeSessionFile,
   resetSession,
   removeSession,
   sweepExpiredSessions,
