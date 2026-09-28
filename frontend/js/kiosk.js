@@ -80,8 +80,8 @@ class SoundPlayer {
 
 const sounds = new SoundPlayer();
 
-// Initialize on DOM ready
-document.addEventListener('DOMContentLoaded', () => {
+// Initialize on DOM ready or immediate if already loaded
+function startKiosk() {
   initClock();
   initSocket();
   initPrinters();
@@ -89,7 +89,13 @@ document.addEventListener('DOMContentLoaded', () => {
   initNewSession();
   bindUIEvents();
   bindDiagnostics();
-});
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', startKiosk);
+} else {
+  startKiosk();
+}
 
 // Digital Clock (optional)
 function initClock() {
@@ -105,7 +111,12 @@ function initClock() {
 
 // Socket Connection & Real-Time Synchronization
 function initSocket() {
-  socket = io(API_BASE);
+  socket = io(API_BASE, {
+    transports: ['websocket', 'polling'],
+    reconnection: true,
+    reconnectionAttempts: 10,
+    reconnectionDelay: 1500
+  });
 
   socket.on('connect', () => {
     console.log('⚡ Connected to PrintMate Server:', socket.id);

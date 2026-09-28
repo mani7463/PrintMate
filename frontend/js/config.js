@@ -9,7 +9,12 @@ const queryBackend = urlParams.get('backend');
 if (queryBackend) {
   localStorage.setItem('PRINTMATE_BACKEND', queryBackend);
 }
-const savedBackend = localStorage.getItem('PRINTMATE_BACKEND');
+let savedBackend = localStorage.getItem('PRINTMATE_BACKEND');
+// Purge stale or placeholder URLs cached in previous sessions
+if (savedBackend && (savedBackend.includes('printmate-backend.onrender.com') || (window.location.hostname !== 'localhost' && savedBackend.includes('localhost')))) {
+  localStorage.removeItem('PRINTMATE_BACKEND');
+  savedBackend = null;
+}
 
 window.PRINTMATE_CONFIG = {
   // Production Render Backend URL (Deployed Render service URL)

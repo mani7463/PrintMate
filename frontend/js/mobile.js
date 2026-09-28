@@ -26,14 +26,20 @@ const printSettings = {
   orientation: 'portrait'
 };
 
-document.addEventListener('DOMContentLoaded', () => {
+function initApp() {
   extractSessionId();
   initSocket();
   bindDropzone();
   bindSettingsControls();
   bindPaymentModal();
   updateCostEstimator();
-});
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initApp);
+} else {
+  initApp();
+}
 
 // Extract session ID from URL path (e.g. /kiosk/:sessionId or /session/:sessionId)
 function extractSessionId() {
@@ -54,11 +60,23 @@ function extractSessionId() {
 
 // Socket Connection & Real-Time Sync
 function initSocket() {
-  socket = io(API_BASE);
+  const bannerText = document.getElementById('banner-text');
+
+  socket = io(API_BASE, {
+    transports: ['websocket', 'polling'],
+    reconnection: true,
+    reconnectionAttempts: 10,
+    reconnectionDelay: 1500
+  });
 
   socket.on('connect', () => {
     console.log('📱 Mobile linked with socket id:', socket.id);
+    if (bannerText) bannerText.textContent = 'Hardware Synchronized. Ready for document upload.';
     socket.emit('join_session', { sessionId, clientType: 'mobile' });
+  });
+
+  socket.on('connect_error', () => {
+    if (bannerText) bannerText.textContent = 'Connecting to PrintMate Cloud... Please wait.';
   });
 
   socket.on('session:state', (data) => {
@@ -112,39 +130,6 @@ function bindDropzone() {
   const dropzone = document.getElementById('dropzone');
   const fileInput = document.getElementById('file-input');
   const removeBtn = document.getElementById('btn-remove-file');
-  const sampleBtn = document.getElementById('btn-use-sample');
-
-  if (sampleBtn) {
-    sampleBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const sampleText = `=====================================================
-PRINTMATE SMART PVM EXPRESS RECEIPT & MANIFEST
-Self-Service Cloud Print Synchronization
-=====================================================
-Page: 1 of 2
-Timestamp: ${new Date().toISOString()}
-Session UUID: ${sessionId}
-Tray: Tray 1 (A4 Automatic Feed)
-Security: Zero-Trace Memory Shredding Active
-Authorized User: Customer Mobile Web Portal
-
-=====================================================
-Page: 2 of 2
-PrintMate Hardware Diagnostics:
-- CUPS 2.4.2 Spooler: Online
-- Thermal Fuser Unit: 180°C
-- Paper Supply: 100% Verified
-Thank you for using PrintMate Self-Service PVM!
-=====================================================`;
-      const blob = new Blob([sampleText], { type: 'text/plain' });
-      const sampleFile = new File([blob], 'PrintMate_Sample_2Pages.txt', { type: 'text/plain' });
-      processSelectedFile(sampleFile, 2);
-    });
-  }
-
-  dropzone.addEventListener('click', () => {
-    fileInput.click();
-  });
 
   ['dragenter', 'dragover'].forEach(name => {
     dropzone.addEventListener(name, (e) => {
@@ -168,7 +153,7 @@ Thank you for using PrintMate Self-Service PVM!
   });
 
   fileInput.addEventListener('change', (e) => {
-    if (e.target.files.length > 0) {
+    if (e.target.files && e.target.files.length > 0) {
       inspectAndUploadFile(e.target.files[0]);
     }
   });
@@ -183,6 +168,8 @@ Thank you for using PrintMate Self-Service PVM!
     detectedPageCount = 1;
     printSettings.pageCount = 1;
     updateCostEstimator();
+    const bannerText = document.getElementById('banner-text');
+    if (bannerText) bannerText.textContent = 'Hardware Synchronized. Ready for document upload.';
   });
 }
 
@@ -209,55 +196,61 @@ async function inspectAndUploadFile(file) {
 
 // Fast Client-Side PDF Page Counting & Canvas Preview
 function countPdfPagesAndPreview(file) {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = async function() {
-      const buffer = reader.result;
+  return Promise.race([
+    new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = async function() {
+        const buffer = reader.result;
 
-      // 1. If pdf.js is loaded, use it to get exact count and render page 1 thumbnail
-      if (window.pdfjsLib) {
-        try {
-          const pdf = await window.pdfjsLib.getDocument({ data: buffer }).promise;
-          const numPages = pdf.numPages || 1;
-
-          // Render first page thumbnail to canvas
+        // 1. If pdf.js is loaded, use it to get exact count and render page 1 thumbnail
+        if (window.pdfjsLib) {
           try {
-            const page = await pdf.getPage(1);
-            const canvas = document.getElementById('preview-canvas');
-            const context = canvas.getContext('2d');
-            const viewport = page.getViewport({ scale: 0.25 });
-            canvas.height = viewport.height;
-            canvas.width = viewport.width;
-            await page.render({ canvasContext: context, viewport }).promise;
-            canvas.style.display = 'block';
-            document.getElementById('preview-fallback-icon').style.display = 'none';
-          } catch (renderErr) {
-            console.warn('Thumbnail render fallback:', renderErr);
+            const pdf = await window.pdfjsLib.getDocument({ data: buffer }).promise;
+            const numPages = pdf.numPages || 1;
+
+            // Render first page thumbnail to canvas
+            try {
+              const page = await pdf.getPage(1);
+              const canvas = document.getElementById('preview-canvas');
+              const context = canvas.getContext('2d');
+              const viewport = page.getViewport({ scale: 0.25 });
+              canvas.height = viewport.height;
+              canvas.width = viewport.width;
+              await page.render({ canvasContext: context, viewport }).promise;
+              canvas.style.display = 'block';
+              document.getElementById('preview-fallback-icon').style.display = 'none';
+            } catch (renderErr) {
+              console.warn('Thumbnail render fallback:', renderErr);
+            }
+
+            return resolve(numPages);
+          } catch (e) {
+            console.warn('PDF.js parse fallback:', e);
+          }
+        }
+
+        // 2. Fast binary fallback parser: scan PDF byte stream for /Type /Page and /Count
+        try {
+          const text = new TextDecoder('latin1').decode(new Uint8Array(buffer));
+          let matches = text.match(/\/Type\s*\/Page[^s]/g);
+          let pageCount = matches ? matches.length : 1;
+
+          const countMatch = text.match(/\/Count\s+(\d+)/);
+          if (countMatch && parseInt(countMatch[1], 10) > pageCount) {
+            pageCount = parseInt(countMatch[1], 10);
           }
 
-          return resolve(numPages);
-        } catch (e) {
-          console.warn('PDF.js parse failed, falling back to binary parser:', e);
+          resolve(Math.max(1, pageCount));
+        } catch (_) {
+          resolve(1);
         }
-      }
+      };
 
-      // 2. Binary fallback parser: scan PDF byte stream for /Type /Page and /Count
-      const text = new TextDecoder('latin1').decode(new Uint8Array(buffer));
-      let matches = text.match(/\/Type\s*\/Page[^s]/g);
-      let pageCount = matches ? matches.length : 1;
-
-      // Also check /Count regex
-      const countMatch = text.match(/\/Count\s+(\d+)/);
-      if (countMatch && parseInt(countMatch[1], 10) > pageCount) {
-        pageCount = parseInt(countMatch[1], 10);
-      }
-
-      resolve(Math.max(1, pageCount));
-    };
-
-    reader.onerror = () => resolve(1);
-    reader.readAsArrayBuffer(file);
-  });
+      reader.onerror = () => resolve(1);
+      reader.readAsArrayBuffer(file);
+    }),
+    new Promise(resolve => setTimeout(() => resolve(1), 2500))
+  ]);
 }
 
 function renderImagePreview(file) {
@@ -299,6 +292,9 @@ async function processSelectedFile(file, pageCount = 1) {
   showUploadedFileUI(file.name, file.size, pageCount);
   updateCostEstimator();
 
+  const bannerText = document.getElementById('banner-text');
+  if (bannerText) bannerText.textContent = `Uploading ${file.name}... ⏳`;
+
   // Upload to server
   const formData = new FormData();
   formData.append('document', file);
@@ -315,8 +311,11 @@ async function processSelectedFile(file, pageCount = 1) {
 
     uploadedFile = data.file;
     document.getElementById('btn-open-payment').disabled = false;
+    if (bannerText) bannerText.textContent = `✅ ${file.name} uploaded. Choose settings & proceed to pay.`;
     syncSettingsToKiosk();
   } catch (err) {
+    console.error('Upload failed:', err);
+    if (bannerText) bannerText.textContent = `❌ Upload failed: ${err.message}. Please tap to retry.`;
     alert('Upload failed: ' + err.message);
   }
 }
